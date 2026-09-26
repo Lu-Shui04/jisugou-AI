@@ -145,8 +145,9 @@
 import { ref, computed, nextTick } from 'vue';
 import { useRag } from '../composables/useRag.js';
 import MarkdownText from '../components/MarkdownText.vue';
-
-const API_BASE = 'http://localhost:3000/api';
+// 必须用统一的 API_BASE：这里原来写死了 http://localhost:3000/api（本地开发留下的），
+// 线上点"查看原文"就变成请求用户自己电脑的 3000 端口 —— 连不上，报 Failed to fetch
+import { API_BASE } from '../api.js';
 
 const { messages, loading, error, ask, clearMessages } = useRag();
 
@@ -239,7 +240,11 @@ const openDoc = async (src) => {
     if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
     doc.value = { ...doc.value, loading: false, path: data.path, content: data.content };
   } catch (err) {
-    doc.value = { ...doc.value, loading: false, error: '原文加载失败：' + err.message };
+    // 带上实际请求地址：网络类失败（Failed to fetch）不落在服务端日志里，只能靠这行定位
+    doc.value = {
+      ...doc.value, loading: false,
+      error: '原文加载失败：' + err.message + '（请求 ' + API_BASE + '/rag/source）',
+    };
   }
 
   await nextTick();
