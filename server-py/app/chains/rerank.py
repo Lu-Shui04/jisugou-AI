@@ -1,21 +1,22 @@
-"""可选重排（rerank）：智谱 /rerank 接口
+"""可选重排（rerank）：硅基流动（SiliconFlow）/rerank 接口
 
-要不要用重排，取决于知识库规模：
+模型：BAAI/bge-reranker-v2-m3（Cross-Encoder 精排，中文场景稳）
 
-- **现阶段（20 个片段 + Top-K=4）**：向量召回本身就准（15/15 命中正确来源），
-  重排只会平白多一次 HTTP 调用，所以默认**关闭**；
-- **知识库涨到几百/几千片段时**：先粗排召回 top-20~50，再用重排精排保留 top-4~6，
-  这时收益明显（粗排的 top1 经常不是最相关的）。
+为什么换成硅基流动的 bge-reranker-v2-m3：
+- 智谱 rerank 的分数接近饱和（实测 4 位小数下全是 1.0000），只能当排序用、不能当阈值用；
+- bge-reranker-v2-m3 的分数是**可区分的**（实测同一问句下 0.8263 / 0.0837 / 0.0008），
+  既能排序、也能当相关性参考，后台"重排前后名次变化"看起来才不是一排 1.0000。
 
 配置（.env）：
 
-    RAG_RERANK_ENABLED=false        # 总开关，默认关
-    RAG_RERANK_MODEL=rerank         # 智谱重排模型
-    RAG_RERANK_TOP_N=4              # 重排后保留前 N 条
-    RAG_RERANK_MIN_CANDIDATES=2     # 候选太少就不值得调接口
+    RAG_RERANK_ENABLED=true                      # 总开关
+    RAG_RERANK_BASE_URL=https://api.siliconflow.cn/v1
+    RAG_RERANK_API_KEY=sk-xxxx                   # 留空则回退 SILICONFLOW_API_KEY
+    RAG_RERANK_MODEL=BAAI/bge-reranker-v2-m3     # 硅基流动重排模型
+    RAG_RERANK_TOP_N=4                           # 重排后保留前 N 条
+    RAG_RERANK_MIN_CANDIDATES=2                  # 候选太少就不值得调接口
     RAG_RERANK_TIMEOUT_SECONDS=3
 
-Key 复用 SECURITY_ZHIPU_API_KEY / ZHIPU_API_KEY。
 接口失败一律 fail-open：原样返回候选，不影响主流程。
 """
 import logging
@@ -24,20 +25,43 @@ import time
 
 logger = logging.getLogger("jisu.rerank")
 
+PROVIDER = "硅基流动 SiliconFlow"
+DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_MODEL = "BAAI/bge-reranker-v2-m3"
+
 RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "rerank")
+RERANK_MODEL = (os.getenv("RAG_RERANK_MODEL") or DEFAULT_MODEL).strip()
 RERANK_TOP_N = int(os.getenv("RAG_RERANK_TOP_N", "4"))
 RERANK_MIN_CANDIDATES = int(os.getenv("RAG_RERANK_MIN_CANDIDATES", "2"))
 RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT_SECONDS", "3"))
-RERANK_BASE_URL = os.getenv("SECURITY_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+RERANK_BASE_URL = (os.getenv("RAG_RERANK_BASE_URL") or DEFAULT_BASE_URL).strip()
 
 
 def api_key() -> str:
-    return (os.getenv("SECURITY_ZHIPU_API_KEY") or os.getenv("ZHIPU_API_KEY") or "").strip()
+    """重排专用 Key，没配就回退到通用的 SILICONFLOW_API_KEY"""
+    return (os.getenv("RAG_RERANK_API_KEY") or os.getenv("SILICONFLOW_API_KEY") or "").strip()
 
 
 def enabled() -> bool:
     return RERANK_ENABLED and bool(api_key())
+
+
+def describe() -> str:
+    """给后台 /admin 系统页展示的重排策略文案（一眼看出用的是谁家的哪个模型）"""
+    if not RERANK_ENABLED:
+        return "相似度阈值过滤（score >= threshold 保留）"
+    if not api_key():
+        return "重排已开启但缺少 RAG_RERANK_API_KEY，实际仍走阈值过滤"
+    return "%s 重排（%s，Top-N=%d）" % (PROVIDER, RERANK_MODEL, RERANK_TOP_N)
+
+
+def _total_tokens(data: dict) -> int:
+    """Token 数兼容两种返回：OpenAI 风格 usage.total_tokens / 硅基流动 meta.tokens.input_tokens"""
+    total = (data.get("usage") or {}).get("total_tokens")
+    if total:
+        return int(total)
+    meta_tokens = (data.get("meta") or {}).get("tokens") or {}
+    return int(meta_tokens.get("input_tokens") or meta_tokens.get("total_tokens") or 0)
 
 
 def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
@@ -58,6 +82,8 @@ def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
         "query": question,
         "documents": documents,
         "top_n": min(top_n, len(documents)),
+        # 不回传原文：候选正文本地就有，少传一遍省带宽
+        "return_documents": False,
     }
     headers = {"Authorization": "Bearer " + api_key(), "Content-Type": "application/json"}
 
@@ -75,7 +101,7 @@ def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
         return hits, {"enabled": True, "error": str(err)[:200], "before": before, "after": before}
 
     latency_ms = int((time.perf_counter() - started) * 1000)
-    tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
+    tokens = _total_tokens(data)
 
     reordered = []
     for rank_after, item in enumerate(data.get("results") or [], start=1):
@@ -89,9 +115,9 @@ def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
             "rank_before": index + 1,
             "rank_after": rank_after,
         }
-        # 注意：智谱 rerank 的分数几乎都在 0.999+（实测 4 位小数下全是 1.0000），
-        # 只能当**排序**依据，不能当阈值依据；所以对外仍保留原来的相似度分，
-        # 重排分只写进 metadata 供后台对照"重排前后的名次变化"。
+        # 硅基流动 bge-reranker-v2-m3 的分数量级和向量相似度不同（0.8 / 0.08 这种），
+        # 而下游的 RAG_SCORE_THRESHOLD 是按向量相似度调的，所以对外仍保留原来的相似度分，
+        # 重排分只写进 metadata，供后台对照"重排前后的名次变化"。
         reordered.append((doc, original_score))
 
     if not reordered:
@@ -101,6 +127,7 @@ def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
     changed = sum(1 for i, src in enumerate(after) if i < len(before) and before[i] != src)
     return reordered, {
         "enabled": True,
+        "provider": PROVIDER,
         "model": RERANK_MODEL,
         "latency_ms": latency_ms,
         "tokens": tokens,

@@ -505,6 +505,7 @@ def _postgres_stats() -> dict:
 
 @router.get("/system")
 async def system_status(admin: dict = Depends(require_admin)):
+    from app.chains import rerank as rerank_module
     from app.chains.rag_chain import COLLECTION_NAME, RAG_SCORE_THRESHOLD, RAG_TOP_K
     from app.db.postgres import PG_DATABASE, PG_HOST, PG_PORT
     from app.models.deepseek import DEEPSEEK_BASE_URL, MODEL_NAME
@@ -534,7 +535,7 @@ async def system_status(admin: dict = Depends(require_admin)):
             "collection": COLLECTION_NAME,
             "top_k": RAG_TOP_K,
             "score_threshold": RAG_SCORE_THRESHOLD,
-            "rerank": "相似度阈值过滤（score >= threshold 保留）",
+            "rerank": rerank_module.describe(),
         },
         "admin": {
             "username": ADMIN_USERNAME,

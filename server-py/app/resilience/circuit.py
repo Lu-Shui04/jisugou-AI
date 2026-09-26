@@ -430,7 +430,9 @@ _breakers: dict[str, CircuitBreaker] = {}
 _registry_lock = threading.RLock()
 
 # 依赖清单（名字即"熔断粒度"）：llm:chat / llm:chat:fallback / embedding:zhipu /
-# judge:security / judge:handoff / rerank:zhipu
+# judge:security / judge:handoff
+# 注：rerank（硅基流动 bge-reranker-v2-m3）没接熔断器，它的容错是
+# RAG_RERANK_TIMEOUT_SECONDS 超时 + fail-open（重排失败就保持原顺序）
 def get_breaker(name: str) -> CircuitBreaker:
     with _registry_lock:
         breaker = _breakers.get(name)
