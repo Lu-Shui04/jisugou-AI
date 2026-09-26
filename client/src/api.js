@@ -90,6 +90,59 @@ export function gateExpired(response) {
   return true;
 }
 
+/**
+ * SSE 行解析器：**跨网络分片缓冲**
+ *
+ * 线上真实问题（知识库页"回答里有 [1][2]、下面却不显示参考来源"）：
+ * 原来是每个网络分片各自 split('\n')，一行被 TCP / nginx 切开时——
+ *   前半段以 "data: " 开头 → JSON.parse 失败 → 被 catch 静默吞掉
+ *   后半段不以 "data: " 开头 → 被 filter 丢掉
+ * 一个事件就这么永久消失了。sources 是**一次性推送的大 JSON**（几条来源带完整片段），
+ * 跨分片概率最高，丢了又不会再补 —— 表现出来就是"有时候没有参考来源"。
+ * 这里先把分片拼成完整行再解析，分片边界切在哪里都不影响。
+ */
+export function createSseParser() {
+  let buffer = '';
+
+  const parseLine = (line) => {
+    const text = line.replace(/\r$/, '');
+    if (!text.startsWith('data:')) return null;
+    const payload = text.slice(5).trim();
+    if (!payload || payload === '[DONE]') return null;
+    try {
+      return JSON.parse(payload);
+    } catch {
+      // 走到这里说明是真·坏数据（分片问题已由缓冲解决），留一条日志便于排查
+      console.warn('[sse] 事件解析失败，已跳过：', payload.slice(0, 80));
+      return null;
+    }
+  };
+
+  return {
+    /** 喂一个网络分片，返回这一段里能凑齐的完整事件 */
+    push(chunk) {
+      buffer += chunk;
+      const events = [];
+      let index = buffer.indexOf('\n');
+      while (index >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        const event = parseLine(line);
+        if (event) events.push(event);
+        index = buffer.indexOf('\n');
+      }
+      return events;
+    },
+    /** 流结束时把最后一行（没有换行收尾的）也处理掉 */
+    flush() {
+      const rest = buffer;
+      buffer = '';
+      const event = rest ? parseLine(rest) : null;
+      return event ? [event] : [];
+    },
+  };
+}
+
 /** 走门禁的流式请求（四个烧额度的入口）：401 不当成"网络错误"，而是要重新过滑块 */
 export async function apiStream(path, options) {
   const opts = options || {};

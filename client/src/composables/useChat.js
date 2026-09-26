@@ -11,7 +11,7 @@
  */
 import { ref, nextTick, watch } from 'vue';
 import { useUser, ensureIdentity, onIdentityChange } from './useUser.js';
-import { API_BASE, apiStream, authHeaders } from '../api.js';
+import { API_BASE, apiStream, authHeaders, createSseParser } from '../api.js';
 
 // 身份：服务端登录令牌（随每个请求的 Authorization 头带给后端，
 // 后端据此认定"你是谁"；请求体里的 user_id 只用于后台展示）
@@ -116,22 +116,18 @@ export function useChat() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
+      const sse = createSseParser();
       let raw = '';
       let sources = [];
 
       // 读取 SSE 流
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        // done 时把缓冲里最后一行也冲出来（服务端万一没以换行收尾）
+        const events = done ? sse.flush() : sse.push(decoder.decode(value, { stream: true }));
 
-        const text = decoder.decode(value, { stream: true });
-        const lines = text.split('\n').filter((l) => l.startsWith('data: '));
-
-        for (const line of lines) {
-          const payload = line.slice(6).trim();
-          try {
-            const parsed = JSON.parse(payload);
-
+        // 跨分片缓冲解析（旧实现会把被切开的那一行整个丢掉，sources 就是这么没的）
+        for (const parsed of events) {
             // 后端下发/确认的 session_id，存起来供下一轮复用
             if (parsed.type === 'session' && parsed.session_id) {
               sessionId.value = parsed.session_id;
@@ -157,9 +153,6 @@ export function useChat() {
               await nextTick();
               scrollCallback?.();
             }
-          } catch {
-            // 忽略解析失败的片段
-          }
         }
       }
 

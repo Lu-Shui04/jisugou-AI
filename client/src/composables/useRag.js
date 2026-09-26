@@ -2,7 +2,7 @@
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢问答记录
 import { ref, nextTick, watch } from 'vue';
 import { useUser, ensureIdentity, onIdentityChange } from './useUser.js';
-import { apiStream } from '../api.js';
+import { apiStream, createSseParser } from '../api.js';
 
 // 身份：服务端登录令牌（知识库是公共数据，但身份同样由服务端认定）
 const { identity } = useUser();
@@ -64,20 +64,15 @@ export function useRag() {
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
+      const sse = createSseParser();
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        // done 时把缓冲里最后一行也冲出来（服务端万一没以换行收尾）
+        const events = done ? sse.flush() : sse.push(decoder.decode(value, { stream: true }));
 
-        const lines = decoder
-          .decode(value, { stream: true })
-          .split('\n')
-          .filter((l) => l.startsWith('data: '));
-
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line.slice(6));
-
+        // 跨分片缓冲解析（旧实现会把被切开的那一行整个丢掉）
+        for (const parsed of events) {
             if (parsed.type === 'sources') {
               messages.value[assistantIndex] = {
                 ...messages.value[assistantIndex],
@@ -115,7 +110,6 @@ export function useRag() {
                 sources: [], loading: false,
               };
             }
-          } catch {}
         }
       }
     } catch (err) {

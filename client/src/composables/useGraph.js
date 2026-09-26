@@ -2,7 +2,7 @@
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢聊天记录
 import { ref, nextTick, watch } from 'vue';
 import { useUser, ensureIdentity, onIdentityChange, recoverIdentity } from './useUser.js';
-import { API_BASE, apiStream, authHeaders } from '../api.js';
+import { API_BASE, apiStream, authHeaders, createSseParser } from '../api.js';
 
 // 身份：服务端登录令牌（Authorization 头）；智能中枢里也有订单节点，同样按真实用户校验
 const { identity } = useUser();
@@ -98,20 +98,15 @@ export function useGraph() {
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
+      const sse = createSseParser();
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        // done 时把缓冲里最后一行也冲出来（服务端万一没以换行收尾）
+        const events = done ? sse.flush() : sse.push(decoder.decode(value, { stream: true }));
 
-        const lines = decoder
-          .decode(value, { stream: true })
-          .split('\n')
-          .filter((l) => l.startsWith('data: '));
-
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line.slice(6));
-
+        // 跨分片缓冲解析（旧实现会把被切开的那一行整个丢掉）
+        for (const parsed of events) {
             if (parsed.type === 'session' && parsed.session_id) {
               sessionId.value = parsed.session_id;
               localStorage.setItem(SESSION_KEY, parsed.session_id);
@@ -186,7 +181,6 @@ export function useGraph() {
               };
               currentNode.value = '';
             }
-          } catch {}
         }
       }
     } catch (err) {
