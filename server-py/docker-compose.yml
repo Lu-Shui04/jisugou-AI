@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      # 宿主机端口可用 APP_PORT 覆盖（默认 3000）：
+      # 本地如果 3000 被别的项目占了，就用 APP_PORT=3001 docker compose up -d
+      - "${APP_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      # 容器内通过服务名访问 redis（会话缓存）
+      REDIS_HOST: redis
+      # 其余参数（SESSION_TTL_SECONDS / RAG_SCORE_THRESHOLD 等）统一由 .env 配置，
+      # 不要在这里重复写，否则会覆盖 .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - jisu-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/api/chat/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: jishu_ai_2025
+      POSTGRES_DB: jisu_ai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - jisu-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d jisu_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - jisu-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  jisu-net:
+    driver: bridge

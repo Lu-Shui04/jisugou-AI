@@ -27,6 +27,9 @@ cp .env.example .env
 | `ZHIPU_API_KEY` | 智谱 AI Embedding Key（RAG 功能必填，二选一） |
 | `DASHSCOPE_API_KEY` | 阿里云百炼 Embedding Key（二选一，需同时修改 `app/models/embedding.py` 启用对应代码块） |
 | `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_PASSWORD` / `PG_DATABASE` | PostgreSQL 连接信息（RAG 功能必填） |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理员后台账号密码，默认 `admin` / `123456` |
+| `ADMIN_TOKEN_TTL` | 登录令牌有效期（秒），默认 8 小时 |
+| `USAGE_RETENTION_SECONDS` / `CHATLOG_RETENTION_SECONDS` | 用量统计 / 对话记录保留时间（秒），默认 7 天 |
 
 ## 3. 准备 PostgreSQL + pgvector
 
@@ -56,6 +59,14 @@ uvicorn app.main:app --reload --port 3000
 
 启动后访问 `http://localhost:3000/` 应返回服务信息 JSON。
 
+前端（Vue3 + Vite）：
+
+```bash
+cd client
+npm install
+npm run dev          # http://localhost:5173
+```
+
 ## 6. 接口列表
 
 | 接口 | 说明 |
@@ -66,6 +77,9 @@ uvicorn app.main:app --reload --port 3000
 | `POST /api/agent/stream` | 客服 Agent 对话（自动调用订单/物流工具，SSE） |
 | `POST /api/rag/query` | 知识库问答（SSE） |
 | `POST /api/graph/stream` | LangGraph 多节点工作流对话（意图路由 → 订单/知识库/闲聊 → 答案合成，SSE） |
+| `GET  /api/observability/usage` | Token 用量汇总（公开只读） |
+
+四个对话接口都接受可选的 `user_id` / `user_name` 字段，前端会自动带上访客标识，管理员后台据此区分「不同用户与 AI 的聊天记录」。
 
 ### 请求示例
 
@@ -93,8 +107,56 @@ curl -N -X POST http://localhost:3000/api/graph/stream \
 
 SSE 接口需加 `-N` 参数禁用 curl 缓冲，才能看到流式输出。
 
-## 7. 常见问题
+## 7. 管理员后台
+
+前端**左上角**「管理员入口」按钮进入 `/admin`（默认账号 `admin`，密码 `123456`，可用 `.env` 的
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` 修改）。登录成功后拿到访问令牌，后续请求都带
+`X-Admin-Token` 头；连续输错 5 次会锁定 5 分钟。
+
+后台能力：
+
+| 页面 | 内容 |
+| --- | --- |
+| 总览看板 | 今日/累计请求数、Token 消耗、活跃用户、平均耗时、错误率；近 N 天 Token 趋势图、入口与模型分布、最近对话 |
+| Token 统计 | 按入口（chat / agent / rag / graph）、按模型、按用户、按天的请求数、输入/输出/总 Token、平均耗时、错误率，支持切换日期与趋势天数 |
+| 对话记录 | 不同用户的每轮问答：用户、会话、入口、问题、回答、Token、耗时、状态；支持按用户 / 入口 / 状态 / 日期 / 关键词筛选与分页，可导出 CSV |
+| 检索与重排 | 知识库检索明细：Top-K 候选片段、相似度得分、阈值、保留/被过滤、兜底降级原因 |
+| 用户列表 | 每位访客的对话轮数、累计 Token、错误数、首次与最近活跃时间、各入口使用分布 |
+| 会话缓存 | 按 `session_id` 查看 Redis 中的会话上下文与剩余 TTL，可一键清空 |
+| 系统状态 | Redis / PostgreSQL 连接状态、知识库片段与来源数、模型与 RAG 配置、各类数据保留策略 |
+
+对应的后端接口（`/api/admin`，除 `login` 外都需要 `X-Admin-Token`）：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /api/admin/login` | 账号密码登录，返回令牌 |
+| `POST /api/admin/logout` | 退出登录 |
+| `GET  /api/admin/me` | 当前登录信息 |
+| `GET  /api/admin/overview` | 看板总览（Token / 请求 / 用户 / 趋势 / 最近对话） |
+| `GET  /api/admin/usage` | Token 用量明细（按入口 / 模型 / 用户 / 日期） |
+| `GET  /api/admin/users` | 用户列表（对话轮数 / Token / 最近活跃） |
+| `GET  /api/admin/conversations` | 聊天记录分页查询（user_id / session_id / route / keyword / day / status） |
+| `GET  /api/admin/conversations/{trace_id}` | 单轮详情（含检索与重排明细、工具调用轨迹） |
+| `DELETE /api/admin/conversations/{trace_id}` | 删除单轮记录 |
+| `GET  /api/admin/retrievals` | 最近的知识库检索 + 重排明细 |
+| `GET  /api/admin/sessions/{session_id}` | 会话缓存内容与剩余 TTL |
+| `DELETE /api/admin/sessions/{session_id}` | 清空会话缓存 |
+| `GET  /api/admin/system` | 系统状态与配置 |
+| `GET  /api/admin/export/conversations.csv` | 导出聊天记录 CSV（带 BOM，Excel 可直接打开） |
+
+审计数据存在 Redis（默认保留 7 天，可用 `CHATLOG_RETENTION_SECONDS` 调整）：
+
+- `chatlog:turn:{trace_id}`：单轮记录（问题、回答、Token、耗时、工具步骤、检索与重排明细）
+- `chatlog:all` / `chatlog:index:{日期}`：全局与按日时间线
+- `chatlog:user:{user_id}` / `chatlog:userstat:{user_id}`：用户时间线与用户汇总
+- `usage:total` / `usage:{日期}` / `usage:route:*` / `usage:model:*` / `usage:user:*`：Token 用量多维汇总
+
+> Redis 不可用时，用量与对话记录会降级写入进程内存（仅保留最近若干条），不影响对话主流程。
+
+## 8. 常见问题
 
 - **启动时报 Postgres 连接/密码错误**：`app/chains/rag_chain.py` 在模块导入时会立即连接数据库初始化向量库，确保 `.env` 中的 Postgres 配置正确且服务已启动，再启动 FastAPI。
 - **RAG 查询无结果**：检查是否已执行第 4 步的 `ingest` 脚本。
 - **模型调用报 401/403**：检查 `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` 是否正确、额度是否充足。
+- **后台显示「登录已过期」**：令牌默认 8 小时过期，重新登录即可；也可调大 `ADMIN_TOKEN_TTL`。
+- **对话记录里出现「匿名」用户**：该轮请求没带 `user_id`（例如直接用 curl 调用），前端页面会自动带上访客标识。

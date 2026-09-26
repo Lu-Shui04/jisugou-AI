@@ -18,6 +18,7 @@
       <div v-if="messages.length === 0" class="welcome">
         <p>您好，我是极速购智能客服中枢。</p>
         <p>我会自动判断您的问题类型，调用最合适的模块为您服务。</p>
+        <p>一句话说清就行，订单 + 商品 + 政策也能一次问完～</p>
         <div class="quick-btns">
           <button v-for="q in quickQuestions" :key="q" @click="handleQuick(q)">
             {{ q }}
@@ -57,7 +58,19 @@
             <span class="dot" /><span class="dot" /><span class="dot" />
           </div>
           <!-- 回答 -->
-          <div v-else class="bubble">{{ msg.content }}</div>
+          <div v-else class="bubble">
+            <MarkdownText v-if="msg.role === 'assistant'" :content="msg.content" />
+            <template v-else>{{ msg.content }}</template>
+            <div v-if="msg.sources && msg.sources.length" class="source-hint">
+              <span class="source-hint-label">📎 依据</span>
+              <span
+                v-for="item in msg.sources.slice(0, 3)"
+                :key="item.index || item.source"
+                class="source-hint-chip"
+                :title="item.section || item.source"
+              >{{ item.source }}<em v-if="item.score !== undefined"> · {{ Number(item.score).toFixed(2) }}</em></span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -86,6 +99,7 @@
 <script setup>
 import { ref, nextTick } from 'vue';
 import { useGraph, NODE_LABELS } from '../composables/useGraph.js';
+import MarkdownText from '../components/MarkdownText.vue';
 
 const { messages, loading, currentNode, error, sendMessage, clearMessages } = useGraph();
 
@@ -159,6 +173,21 @@ const formatStepInput = (input) => {
   display: flex; flex-direction: column; gap: 16px;
 }
 .welcome { text-align: center; padding: 40px 20px; color: #64748b; }
+
+/* 知识库依据：回答了知识库里的内容，就把出处摆出来（用户能核对，也能判断是不是编的） */
+.source-hint {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 8px; padding-top: 7px; border-top: 1px dashed rgba(148, 163, 184, .5);
+  font-size: 11.5px; color: #475569;
+}
+.source-hint-label { color: #0f766e; font-weight: 600; }
+.source-hint-chip {
+  padding: 1px 7px; border-radius: 999px; background: #f0fdfa;
+  border: 1px solid #99f6e4; color: #0f766e;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.source-hint-chip em { font-style: normal; opacity: .75; }
+
 .welcome p { font-size: 15px; margin: 0 0 8px; }
 .quick-btns {
   display: flex; flex-wrap: wrap; gap: 8px;
@@ -171,7 +200,10 @@ const formatStepInput = (input) => {
 }
 
 .message-row { display: flex; gap: 8px; }
-.message-row.user { justify-content: flex-end; flex-direction: row-reverse; }
+/* row-reverse 的主轴起点在右侧，贴右边的写法是 flex-start（头像落在最右） */
+.message-row.user { flex-direction: row-reverse; justify-content: flex-start; }
+
+.message-row.assistant { justify-content: flex-start; }
 
 .avatar-sm {
   width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
@@ -272,4 +304,28 @@ textarea:disabled { opacity: 0.6; }
 }
 .send-btn:hover:not(:disabled) { background: #6d28d9; }
 .send-btn:disabled { background: #ddd6fe; color: #7c3aed; cursor: not-allowed; }
+
+/* ── 移动端适配（≤768px）：桌面端不受影响 ── */
+@media (max-width: 768px) {
+  .graph-page { width: 100%; max-width: 100%; margin: 0; }
+  .chat-header { padding: 10px 12px; }
+  .avatar { width: 36px; height: 36px; font-size: 16px; border-radius: 10px; }
+  .header-left h1 { font-size: 15px; }
+  .subtitle { font-size: 11px; }
+  .messages-wrap { padding: 12px 10px; gap: 12px; }
+  .message-content { max-width: 88%; }
+  .bubble { padding: 10px 13px; font-size: 14px; }
+  .flow-trace { font-size: 11px; }
+  .welcome { padding: 24px 12px; }
+  .input-area { padding: 10px 12px; }
+  .send-btn { width: 64px; }
+
+  /* 关键：flex 项默认 min-width:auto，宽表格会把气泡撑出屏幕（max-width 也压不住） */
+  .message-row { min-width: 0; }
+  .bubble-wrap, .message-content { min-width: 0; }
+  /* 气泡自己也是 flex 项，要能收缩到比内容更窄，内部再横向滚动 */
+  .bubble { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+  .md-table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .md-code { max-width: 100%; overflow-x: auto; }
+}
 </style>

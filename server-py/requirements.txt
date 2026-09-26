@@ -6,6 +6,7 @@ langchain-openai
 langchain-postgres
 langchain-text-splitters
 langgraph
+redis
 psycopg[binary]
 python-dotenv
 pydantic

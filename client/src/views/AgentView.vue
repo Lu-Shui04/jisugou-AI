@@ -45,7 +45,11 @@
             <span class="dot-2">.</span>
             <span class="dot-3">.</span>
           </div>
-          <div v-else class="bubble">{{ msg.content }}</div>
+          <div v-else class="bubble">
+            <!-- 模型输出带 Markdown（加粗/列表/表格）时按格式渲染，不再显示 ** 符号 -->
+            <MarkdownText v-if="msg.role === 'assistant'" :content="msg.content" />
+            <template v-else>{{ msg.content }}</template>
+          </div>
         </div>
       </div>
 
@@ -93,6 +97,7 @@
 <script setup>
 import { ref, nextTick } from 'vue';
 import { useAgent } from '../composables/useAgent.js';
+import MarkdownText from '../components/MarkdownText.vue';
 
 const { messages, loading, steps, error, sendMessage, clearMessages } = useAgent();
 
@@ -175,7 +180,10 @@ const formatInput = (input) => {
 }
 
 .message-row { display: flex; gap: 8px; }
-.message-row.user { justify-content: flex-end; flex-direction: row-reverse; }
+/* row-reverse 的主轴起点在右侧，贴右边的写法是 flex-start（头像落在最右） */
+.message-row.user { flex-direction: row-reverse; justify-content: flex-start; }
+
+.message-row.assistant { justify-content: flex-start; }
 
 .avatar-sm {
   width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
@@ -256,4 +264,27 @@ textarea:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .send-btn:hover:not(:disabled) { background: #1d4ed8; }
 .send-btn:disabled { background: #bfdbfe; cursor: not-allowed; }
+
+/* ── 移动端适配（≤768px）：桌面端不受影响 ── */
+@media (max-width: 768px) {
+  .agent-page { width: 100%; max-width: 100%; margin: 0; }
+  .chat-header { padding: 10px 12px; }
+  .avatar { width: 36px; height: 36px; font-size: 16px; border-radius: 10px; }
+  .header-left h1 { font-size: 15px; }
+  .status { font-size: 11px; }
+  .messages-wrap { padding: 12px 10px; gap: 12px; }
+  .message-content { max-width: 88%; }
+  .bubble { padding: 10px 13px; font-size: 14px; }
+  .welcome { padding: 24px 12px; }
+  .input-area { padding: 10px 12px; }
+  .send-btn { width: 64px; }
+
+  /* 关键：flex 项默认 min-width:auto，宽表格会把气泡撑出屏幕（max-width 也压不住） */
+  .message-row { min-width: 0; }
+  .bubble-wrap, .message-content { min-width: 0; }
+  /* 气泡自己也是 flex 项，要能收缩到比内容更窄，内部再横向滚动 */
+  .bubble { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+  .md-table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .md-code { max-width: 100%; overflow-x: auto; }
+}
 </style>

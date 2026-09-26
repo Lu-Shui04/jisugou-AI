@@ -1,0 +1,40 @@
+{"id":"a01","text":"我要退款","label":"action"}
+{"id":"a02","text":"帮我退款 ORD-003","label":"action"}
+{"id":"a03","text":"我要申请退货","label":"action"}
+{"id":"a04","text":"这个订单我不要了，给我退了吧","label":"action"}
+{"id":"a05","text":"我想把上周买的耳机退掉","label":"action"}
+{"id":"a06","text":"麻烦帮我把收货地址改一下","label":"action"}
+{"id":"a07","text":"我要投诉你们客服","label":"action"}
+{"id":"a08","text":"订单直接退了吧，不用发货了","label":"action"}
+{"id":"a09","text":"怎么申请退款？教我怎么弄","label":"info"}
+{"id":"i01","text":"退款需要多少天？","label":"info"}
+{"id":"i02","text":"退款要几天到账","label":"info"}
+{"id":"i03","text":"退款政策是什么","label":"info"}
+{"id":"i04","text":"退货有什么规则？","label":"info"}
+{"id":"i05","text":"钢化膜能退吗","label":"info"}
+{"id":"i06","text":"我买的耳机不想要了能退吗","label":"info"}
+{"id":"i07","text":"退款收到货后几天退钱","label":"info"}
+{"id":"i08","text":"定制商品可以退货吗","label":"info"}
+{"id":"i09","text":"无理由退货的运费谁出","label":"info"}
+{"id":"i10","text":"退款流程是怎样的","label":"info"}
+{"id":"i11","text":"七天无理由是从哪天开始算","label":"info"}
+{"id":"i12","text":"信用卡退款到账要多久","label":"info"}
+{"id":"i13","text":"退换货需要保留包装吗","label":"info"}
+{"id":"p01","text":"我的退款到哪了","label":"progress"}
+{"id":"p02","text":"退款进度查一下 ORD-006","label":"progress"}
+{"id":"p03","text":"昨天申请的退款还没到","label":"progress"}
+{"id":"p04","text":"退款状态是什么","label":"progress"}
+{"id":"p05","text":"这笔退款什么时候能到我卡上","label":"progress"}
+{"id":"m01","text":"我要退款，顺便问下 X6 耳机多少钱","label":"mixed"}
+{"id":"m02","text":"退款要几天，另外发票怎么开","label":"mixed"}
+{"id":"m03","text":"帮我退掉这单，还有耳机什么时候发货","label":"mixed"}
+{"id":"n01","text":"耳机多少钱","label":"none"}
+{"id":"n02","text":"帮我查一下 U-101 的订单","label":"none"}
+{"id":"n03","text":"我的货怎么还没到","label":"none"}
+{"id":"n04","text":"发票怎么开","label":"none"}
+{"id":"n05","text":"蓝牙耳机怎么保修","label":"none"}
+{"id":"n06","text":"你好呀","label":"none"}
+{"id":"n07","text":"ORD-005 到哪了","label":"none"}
+{"id":"n08","text":"支持花呗分期吗","label":"none"}
+{"id":"n09","text":"你们周末上班吗","label":"none"}
+{"id":"n10","text":"键盘的续航多久","label":"none"}
