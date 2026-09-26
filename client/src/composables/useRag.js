@@ -111,6 +111,7 @@ export function useRag() {
               };
             }
         }
+        if (done) break;
       }
     } catch (err) {
       error.value = `请求失败：${err.message}`;

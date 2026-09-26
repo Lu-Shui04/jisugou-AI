@@ -182,6 +182,7 @@ export function useGraph() {
               currentNode.value = '';
             }
         }
+        if (done) break;
       }
     } catch (err) {
       error.value = `请求失败：${err.message}`;

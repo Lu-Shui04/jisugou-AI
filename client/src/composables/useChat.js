@@ -154,6 +154,7 @@ export function useChat() {
               scrollCallback?.();
             }
         }
+        if (done) break;
       }
 
       // 流结束，将完整回复（正文 + 跳转按钮）存入历史
