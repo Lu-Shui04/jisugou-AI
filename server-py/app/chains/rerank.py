@@ -17,11 +17,20 @@
     RAG_RERANK_MIN_CANDIDATES=2                  # 候选太少就不值得调接口
     RAG_RERANK_TIMEOUT_SECONDS=3
 
-接口失败一律 fail-open：原样返回候选，不影响主流程。
+四层容错（和 embedding / 安全小模型那套一致）：
+    ① 超时：总超时 3s、连接超时 1.5s（连连接都建不起来就别耗着）；
+    ② 熔断：rerank:siliconflow —— 连续失败 / 失败率超标就跳闸，之后直接跳过重排（0ms，不发请求）；
+    ③ 省调用：候选少于 RAG_RERANK_MIN_CANDIDATES 根本不发请求；
+    ④ 降级：任何失败（含熔断打开）都 fail-open —— 原样返回候选，问答主流程完全不受影响。
+
+后台「系统状态」页能看到 rerank:siliconflow 的熔断状态；检索明细里会标出这次是
+正常重排、调用失败保持原顺序，还是熔断跳过。
 """
 import logging
 import os
 import time
+
+from app.resilience import CircuitOpenError, get_breaker
 
 logger = logging.getLogger("jisu.rerank")
 
@@ -34,7 +43,10 @@ RERANK_MODEL = (os.getenv("RAG_RERANK_MODEL") or DEFAULT_MODEL).strip()
 RERANK_TOP_N = int(os.getenv("RAG_RERANK_TOP_N", "4"))
 RERANK_MIN_CANDIDATES = int(os.getenv("RAG_RERANK_MIN_CANDIDATES", "2"))
 RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT_SECONDS", "3"))
+RERANK_CONNECT_TIMEOUT = float(os.getenv("RAG_RERANK_CONNECT_TIMEOUT_SECONDS", "1.5"))
 RERANK_BASE_URL = (os.getenv("RAG_RERANK_BASE_URL") or DEFAULT_BASE_URL).strip()
+# 熔断粒度：重排是"锦上添花"的一步，下游挂了就该立刻跳过，绝不能拖累问答
+RERANK_BREAKER = "rerank:siliconflow"
 
 
 def api_key() -> str:
@@ -64,6 +76,19 @@ def _total_tokens(data: dict) -> int:
     return int(meta_tokens.get("input_tokens") or meta_tokens.get("total_tokens") or 0)
 
 
+def _post_rerank(payload: dict, headers: dict) -> dict:
+    """真正发请求：连接/读超时分开设 + 熔断保护；失败与熔断交给调用方统一降级"""
+    import httpx
+
+    timeout = httpx.Timeout(RERANK_TIMEOUT, connect=min(RERANK_CONNECT_TIMEOUT, RERANK_TIMEOUT))
+    with get_breaker(RERANK_BREAKER).guard():
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(RERANK_BASE_URL.rstrip("/") + "/rerank",
+                                   json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
 def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
     """对候选做重排，返回 (重排后的 hits, 统计信息)
 
@@ -89,16 +114,16 @@ def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
 
     started = time.perf_counter()
     try:
-        import httpx
-
-        with httpx.Client(timeout=RERANK_TIMEOUT) as client:
-            response = client.post(RERANK_BASE_URL.rstrip("/") + "/rerank",
-                                   json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        data = _post_rerank(payload, headers)
+    except CircuitOpenError as err:
+        # 熔断打开：连请求都不发，直接当"这次没重排"（降级里最快的一档）
+        logger.warning("重排熔断打开，本次跳过重排：%s", err)
+        return hits, {"enabled": True, "circuit": "open", "breaker": RERANK_BREAKER,
+                      "error": str(err)[:200], "before": before, "after": before}
     except Exception as err:
         logger.warning("重排调用失败，保持原顺序：%s", err)
-        return hits, {"enabled": True, "error": str(err)[:200], "before": before, "after": before}
+        return hits, {"enabled": True, "circuit": "closed", "breaker": RERANK_BREAKER,
+                      "error": str(err)[:200], "before": before, "after": before}
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     tokens = _total_tokens(data)
@@ -127,6 +152,8 @@ def rerank(question: str, hits: list, top_n: int = None) -> tuple[list, dict]:
     changed = sum(1 for i, src in enumerate(after) if i < len(before) and before[i] != src)
     return reordered, {
         "enabled": True,
+        "circuit": "closed",
+        "breaker": RERANK_BREAKER,
         "provider": PROVIDER,
         "model": RERANK_MODEL,
         "latency_ms": latency_ms,

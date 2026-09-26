@@ -6,12 +6,15 @@
     3. 出错不砸主流程：HTTP 失败 / 返回空 → fail-open，原顺序返回
 """
 import os
+import time
 import unittest
 from unittest import mock
 
+import httpx
 from langchain_core.documents import Document
 
 from app.chains import rerank
+from app.resilience import circuit
 
 
 def make_hits(*sources):
@@ -25,7 +28,11 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise RuntimeError("HTTP %d" % self.status_code)
+            # 真实 httpx 抛的是 HTTPStatusError（带 response.status_code），
+            # 熔断器靠这个区分"请求本身不对(4xx)"和"下游挂了(5xx/网络)"
+            request = httpx.Request("POST", "https://api.siliconflow.cn/v1/rerank")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("HTTP %d" % self.status_code, request=request, response=response)
 
     def json(self):
         return self._payload
@@ -37,9 +44,11 @@ class FakeClient:
     calls = []
     response = None
     error = None
+    timeouts = []
 
     def __init__(self, timeout=None):
         self.timeout = timeout
+        FakeClient.timeouts.append(timeout)
 
     def __enter__(self):
         return self
@@ -59,6 +68,7 @@ class RerankTestBase(unittest.TestCase):
         FakeClient.calls = []
         FakeClient.response = None
         FakeClient.error = None
+        FakeClient.timeouts = []
         env = mock.patch.dict(os.environ, {"RAG_RERANK_API_KEY": "sk-unit-test"})
         env.start()
         self.addCleanup(env.stop)
@@ -182,6 +192,76 @@ class TestFailOpen(RerankTestBase):
         ordered, stats = rerank.rerank("退款几天到账", hits)
         self.assertEqual([d.metadata["source"] for d, _ in ordered], ["A.md", "B.md"])
         self.assertEqual(stats["error"], "重排返回为空")
+
+
+class TestResilience(RerankTestBase):
+    """超时 / 熔断 / 降级三件套：重排是"锦上添花"，绝不能拖累问答"""
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ, {"CIRCUIT_ENABLED": "true",
+                                           "CIRCUIT_DRY_RUN": "false",
+                                           "CIRCUIT_CONSECUTIVE_FAILURES": "2"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.breaker = circuit.get_breaker(rerank.RERANK_BREAKER)
+        self.breaker.reset()
+        self.addCleanup(self.breaker.reset)
+
+    def test_50_timeouts_split_connect_and_read(self):
+        """连接超时 1.5s、读超时 3s：连不上就别等满 3s"""
+        FakeClient.response = FakeResponse({"results": [{"index": 0, "relevance_score": 0.9}]})
+        rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        timeout = FakeClient.timeouts[0]
+        self.assertIsInstance(timeout, httpx.Timeout)
+        self.assertAlmostEqual(timeout.connect, rerank.RERANK_CONNECT_TIMEOUT, places=3)
+        self.assertAlmostEqual(timeout.read, rerank.RERANK_TIMEOUT, places=3)
+
+    def test_51_repeated_failures_open_the_breaker(self):
+        FakeClient.error = httpx.ConnectTimeout("connect timeout")
+        for _ in range(2):
+            rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        self.assertEqual(self.breaker.state(), circuit.OPEN, self.breaker.snapshot())
+
+    def test_52_open_breaker_skips_http_and_degrades_instantly(self):
+        """熔断打开后：不发请求、毫秒级返回原顺序，问答照常答"""
+        FakeClient.error = httpx.ConnectTimeout("connect timeout")
+        for _ in range(2):
+            rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        self.assertEqual(self.breaker.state(), circuit.OPEN)
+
+        FakeClient.calls = []
+        FakeClient.error = None
+        FakeClient.response = FakeResponse({"results": [{"index": 1, "relevance_score": 0.9}]})
+        started = time.perf_counter()
+        ordered, stats = rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        cost = time.perf_counter() - started
+        self.assertEqual(FakeClient.calls, [], "熔断打开时不该再打接口")
+        self.assertEqual(stats["circuit"], "open")
+        self.assertEqual(stats["breaker"], rerank.RERANK_BREAKER)
+        self.assertEqual([d.metadata["source"] for d, _ in ordered], ["A.md", "B.md"], "降级要保留原顺序")
+        self.assertLess(cost, 0.05, "熔断打开必须毫秒级返回（实测 %.4fs）" % cost)
+
+    def test_53_success_counts_as_healthy(self):
+        FakeClient.response = FakeResponse({"results": [{"index": 0, "relevance_score": 0.9}]})
+        _, stats = rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        snapshot = self.breaker.snapshot()
+        self.assertEqual(snapshot["state"], circuit.CLOSED)
+        self.assertEqual(snapshot["failures"], 0)
+        self.assertEqual(stats["circuit"], "closed")
+
+    def test_54_client_error_does_not_trip_the_breaker(self):
+        """400 是"我们请求写错了"，不是下游挂了 —— 不该把熔断打开（否则改错模型名会一直熔断）"""
+        FakeClient.response = FakeResponse({}, status_code=400)
+        for _ in range(3):
+            rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        self.assertEqual(self.breaker.state(), circuit.CLOSED, self.breaker.snapshot())
+
+    def test_55_server_error_trips_the_breaker(self):
+        FakeClient.response = FakeResponse({}, status_code=503)
+        for _ in range(2):
+            rerank.rerank("退款几天到账", make_hits("A.md", "B.md"))
+        self.assertEqual(self.breaker.state(), circuit.OPEN, self.breaker.snapshot())
 
 
 class TestSwitchAndKey(unittest.TestCase):
