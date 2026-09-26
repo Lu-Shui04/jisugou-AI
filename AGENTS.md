@@ -63,7 +63,7 @@ python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
 | `server-py/app/resilience/` | 熔断器（三态机 + 失败分类 + 半开探测） |
 | `server-py/app/utils/handoff.py` | 退款族意图判定与"人工接力"话术 |
 | `server-py/app/utils/grounding.py` | 答案接地校验（防编造订单） |
-| `server-py/tests/` | 114 条单测 + 3 套评测集（注入 41 / 检索 15 / 退款意图 40） |
+| `server-py/tests/` | 129 条单测 + 3 套评测集（注入 41 / 检索 15 / 退款意图 40） |
 | `client/src/` | Vue3 前端（四个业务页 + 管理后台 9 个页签） |
 
 ## 六、风格要求（用户偏好）

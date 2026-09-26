@@ -49,15 +49,18 @@ async def eval_security(use_cache: bool = False, limit: int = 0) -> dict:
     latency_total = 0
     tokens_total = 0
     model_calls = 0
+    model_latency = 0.0
     misses: list[dict] = []
 
     for case in cases:
         started = time.perf_counter()
         verdict = await g.check(case["text"], route="eval")
-        latency_total += int((time.perf_counter() - started) * 1000)
+        elapsed = int((time.perf_counter() - started) * 1000)
+        latency_total += elapsed
         tokens_total += verdict.model_tokens
         if verdict.layer == "model":
             model_calls += 1
+            model_latency += elapsed
         layers[verdict.layer] = layers.get(verdict.layer, 0) + 1
 
         expect_attack = case["label"] == "attack"
@@ -97,8 +100,10 @@ async def eval_security(use_cache: bool = False, limit: int = 0) -> dict:
     print("各层拦截分布    : " + "，".join("%s=%d" % (k, v) for k, v in sorted(layers.items())))
     print("零 token 拦下   : %d/%d = %.0f%%（白名单+规则，未调用小模型）"
           % (no_model, total, (no_model / total * 100) if total else 0))
-    print("小模型调用      : %d 次，累计 %d token" % (model_calls, tokens_total))
-    print("平均判定耗时    : %d ms" % (latency_total // total if total else 0))
+    print("小模型调用      : %d 次，累计 %d token，平均 %d ms/次"
+          % (model_calls, tokens_total, int(model_latency // model_calls) if model_calls else 0))
+    print("平均判定耗时    : %d ms（全部样本，含 0 token 的白名单/规则层）"
+          % (latency_total // total if total else 0))
     if misses:
         print("-" * 62)
         print("错例明细（改规则就看这里）：")
@@ -113,6 +118,8 @@ async def eval_security(use_cache: bool = False, limit: int = 0) -> dict:
     return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1,
             "tp": tp, "fp": fp, "fn": fn, "tn": tn, "layers": layers,
             "model_calls": model_calls, "tokens": tokens_total,
+            "no_model": no_model, "total": total,
+            "avg_model_latency_ms": int(model_latency // model_calls) if model_calls else 0,
             "avg_latency_ms": (latency_total // total) if total else 0, "misses": misses}
 
 
@@ -179,15 +186,18 @@ async def eval_refund(use_cache: bool = False, limit: int = 0) -> dict:
     latency_total = 0
     tokens_total = 0
     model_calls = 0
+    model_latency = 0.0
     correct = 0
 
     for case in cases:
         started = time.perf_counter()
         verdict = await handoff.classify(case["text"])
-        latency_total += int((time.perf_counter() - started) * 1000)
+        elapsed = int((time.perf_counter() - started) * 1000)
+        latency_total += elapsed
         tokens_total += verdict.get("model_tokens") or 0
         if verdict["layer"] == "model":
             model_calls += 1
+            model_latency += elapsed
         layers[verdict["layer"]] = layers.get(verdict["layer"], 0) + 1
 
         expect = case["label"]
@@ -236,8 +246,10 @@ async def eval_refund(use_cache: bool = False, limit: int = 0) -> dict:
     print("判定层分布      : " + "，".join("%s=%d" % (k, v) for k, v in sorted(layers.items())))
     print("零 token 快路径 : %d/%d = %.0f%%（规则命中 + 缓存，没花模型 token）"
           % (no_model, total, (no_model / total * 100) if total else 0))
-    print("小模型调用      : %d 次，累计 %d token" % (model_calls, tokens_total))
-    print("平均判定耗时    : %d ms" % (latency_total // total if total else 0))
+    print("小模型调用      : %d 次，累计 %d token，平均 %d ms/次"
+          % (model_calls, tokens_total, int(model_latency // model_calls) if model_calls else 0))
+    print("平均判定耗时    : %d ms（全部样本，含 0 token 的规则快路径）"
+          % (latency_total // total if total else 0))
     print("误判成 action   : %d 条（这一类最要命：把用户的提问堵成『请联系人工』）" % dangerous)
     if misses:
         print("-" * 62)
@@ -252,6 +264,8 @@ async def eval_refund(use_cache: bool = False, limit: int = 0) -> dict:
 
     return {"accuracy": accuracy, "macro_f1": macro_f1, "stats": stats, "matrix": matrix,
             "layers": layers, "model_calls": model_calls, "tokens": tokens_total,
+            "no_model": no_model, "total": total,
+            "avg_model_latency_ms": int(model_latency // model_calls) if model_calls else 0,
             "misrouted_to_action": dangerous,
             "avg_latency_ms": (latency_total // total) if total else 0, "misses": misses}
 
@@ -264,14 +278,45 @@ def main():
     parser.add_argument("--top-k", type=int, default=4, help="检索评测的 Top-K")
     args = parser.parse_args()
 
+    results = {}
     if args.suite in ("security", "all"):
-        asyncio.run(eval_security(use_cache=args.use_cache, limit=args.limit))
+        results["security"] = asyncio.run(eval_security(use_cache=args.use_cache, limit=args.limit))
         print()
     if args.suite in ("rag", "all"):
-        eval_rag(top_k=args.top_k)
+        results["rag"] = eval_rag(top_k=args.top_k)
         print()
     if args.suite in ("refund", "all"):
-        asyncio.run(eval_refund(use_cache=args.use_cache, limit=args.limit))
+        results["refund"] = asyncio.run(eval_refund(use_cache=args.use_cache, limit=args.limit))
+        print()
+
+    # 三套一起跑时给一张汇总：所有数字都来自本次真实运行，可以直接拿去讲
+    if len(results) > 1:
+        print("=" * 62)
+        print("汇总（每次重跑都会刷新，数字以本次运行为准）")
+        print("=" * 62)
+        if "security" in results:
+            item = results["security"]
+            print("提示词注入防护 : %d 条（攻击 %d / 正常 %d）→ 准确率 %.0f%% / 精确率 %.0f%% / "
+                  "召回率 %.0f%% / F1 %.0f%%；零 token 拦下 %d/%d=%.0f%%；小模型 %d 次 %d token、%d ms/次"
+                  % (item["total"], item["tp"] + item["fn"], item["tn"] + item["fp"],
+                     item["accuracy"] * 100, item["precision"] * 100, item["recall"] * 100,
+                     item["f1"] * 100, item["no_model"], item["total"],
+                     item["no_model"] / item["total"] * 100,
+                     item["model_calls"], item["tokens"], item["avg_model_latency_ms"]))
+        if "rag" in results:
+            item = results["rag"]
+            print("知识库检索     : %d 条 → Recall@%d %d/%d = %.0f%% / MRR %.3f"
+                  % (item["total"], args.top_k, item["hits"], item["total"],
+                     item["recall"] * 100, item["mrr"]))
+        if "refund" in results:
+            item = results["refund"]
+            print("退款意图判定   : %d 条 → 准确率 %.0f%% / 宏平均 F1 %.3f；零 token 快路径 %d/%d=%.0f%%；"
+                  "小模型 %d 次 %d token、%d ms/次；误判成 action %d 条"
+                  % (item["total"], item["accuracy"] * 100, item["macro_f1"],
+                     item["no_model"], item["total"], item["no_model"] / item["total"] * 100,
+                     item["model_calls"], item["tokens"], item["avg_model_latency_ms"],
+                     item["misrouted_to_action"]))
+        print("=" * 62)
 
 
 if __name__ == "__main__":
