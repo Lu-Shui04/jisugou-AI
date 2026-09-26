@@ -17,7 +17,7 @@
     <main class="messages-wrap" ref="messagesRef">
       <div v-if="messages.length === 0" class="welcome">
         <p>您好，我是极速购智能客服小购。</p>
-        <p>我可以帮您查询订单状态和物流信息，请提供您的订单号。</p>
+        <p>我可以帮您查询订单状态和物流信息，直接说「我的订单」就行。</p>
         <div class="quick-btns">
           <button v-for="q in quickQuestions" :key="q" @click="handleQuick(q)">
             {{ q }}
@@ -104,10 +104,12 @@ const { messages, loading, steps, error, sendMessage, clearMessages } = useAgent
 const inputText   = ref('');
 const messagesRef = ref(null);
 
+// 预设词一律用"我的订单"（不写死订单号）：
+// 权限系统上线后身份由服务端令牌认定，写死 ORD-001 只会让非本人看到"无权查看"
 const quickQuestions = [
-  '查一下订单 ORD-001 的状态',
-  '订单 ORD-001 的快递到哪了？',
-  '我有哪些订单？',
+  '查一下我的订单',
+  '我的订单到哪里了？',
+  '我最近一笔订单是什么状态？',
 ];
 
 const scrollToBottom = async () => {

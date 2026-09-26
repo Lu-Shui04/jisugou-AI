@@ -108,11 +108,12 @@ const messagesRef = ref(null);
 
 const NODE_DISPLAY = NODE_LABELS;
 
+// 预设词用"我的订单"：身份由服务端令牌认定，写死订单号会被判无权查看
 const quickQuestions = [
-  '订单 ORD-001 发货了吗？',
+  '查一下我的订单',
+  '我的订单到哪里了？',
   '蓝牙耳机怎么保修？',
   '退款需要多少天？',
-  '你好',
 ];
 
 const scrollToBottom = async () => {
