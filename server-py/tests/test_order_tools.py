@@ -71,6 +71,20 @@ class TestDeterministicLookup(unittest.TestCase):
         self.assertIn("ORD-005", result["answer"])
         self.assertIn("已发货", result["answer"])
 
+    def test_dashless_lowercase_user_id(self):
+        """线上用户会发 "u103给我看一下物流"（小写、漏连字符、中文紧跟着）"""
+        result = deterministic_lookup("u103给我看一下物流")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["steps"][0]["tool"], "getUserOrders")
+        self.assertEqual(result["steps"][0]["input"]["userId"], "U-103")
+        self.assertIn("ORD-008", result["answer"])
+
+    def test_dashless_order_id(self):
+        result = deterministic_lookup("ord006 到哪了")
+        self.assertEqual(result["steps"][0]["tool"], "getOrderInfo")
+        self.assertEqual(result["steps"][0]["input"]["orderId"], "ORD-006")
+        self.assertNotIn("不存在", result["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,6 +46,40 @@ def facts_text(*sources: Iterable) -> str:
     return "\n".join(chunks)
 
 
+def _role_of(message) -> str:
+    """兼容 dict / LangChain 消息两种形态取角色"""
+    if isinstance(message, dict):
+        return str(message.get("role") or "")
+    role = str(getattr(message, "role", "") or "")
+    if role:
+        return role
+    return {"ai": "assistant", "human": "user", "system": "system",
+            "tool": "tool"}.get(str(getattr(message, "type", "") or ""), "")
+
+
+def history_facts(history) -> str:
+    """把本会话里"客服自己已经说过的内容"并入事实来源
+
+    线上事故（Agent 页实测）：
+        用户查完 U-103 的订单（ORD-008 / ORD-009）后只补一句 "U-103"，
+        模型这一轮没调工具、直接沿用上文作答；出口校验只比对**本轮**工具事实，
+        于是回答里的 ORD-008 被判成"编造"，整段被替换成"没能核实到" ——
+        数据明明是前几轮真实查出来的。
+
+    这些历史回答在产出当时都过了同一道校验，可以安全地当作事实来源；
+    真正编造的**新**订单号依然拦得住。
+    """
+    chunks = []
+    for message in history or []:
+        if _role_of(message) != "assistant":
+            continue
+        content = (message.get("content") if isinstance(message, dict)
+                   else getattr(message, "content", ""))
+        if isinstance(content, str) and content:
+            chunks.append(content)
+    return "\n".join(chunks)
+
+
 def ungrounded_order_ids(answer: str, facts: str) -> list[str]:
     """回答里出现了、但事实里没有的订单号"""
     if not answer:

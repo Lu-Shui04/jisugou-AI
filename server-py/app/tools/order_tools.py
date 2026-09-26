@@ -129,9 +129,18 @@ all_tools = [get_order_info_tool, get_logistics_tool, get_user_orders_tool]
 # 线上事故：用户发 "U-108"，ReAct 这次没调工具，直接编了一张订单表
 # （ORD-003 已发货 299 元 智能手环 B5 …），事实来源完全不明。
 # 所以只要用户输入里出现 ID，就允许调用方绕开模型自己查一遍。
-_ORDER_ID_RE = re.compile(r"ORD-\d+", re.IGNORECASE)
-_USER_ID_RE = re.compile(r"U-\d+", re.IGNORECASE)
-_TRACKING_RE = re.compile(r"\b[A-Z]{2}\d{8,}\b", re.IGNORECASE)
+# 用户不一定规规矩矩写 "U-103"：线上真有人发 "u103"、"ord006"（小写、漏掉连字符），
+# 这种写法以前抠不出 ID，等于白查。所以连字符可选、大小写不敏感。
+# 注意用前后「不接字母数字」的断言代替 \b：中文紧跟在 ID 后面（"u103给我看下物流"）时，
+# 中文算 \w，\b 匹配不上，ID 会被整条漏掉。
+_ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])ORD-?(\d+)(?!\d)", re.IGNORECASE)
+_USER_ID_RE = re.compile(r"(?<![A-Za-z0-9])U-?(\d+)(?!\d)", re.IGNORECASE)
+_TRACKING_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2}\d{8,})(?!\d)", re.IGNORECASE)
+
+
+def _canonical_ids(prefix: str, text: str, pattern: "re.Pattern") -> list[str]:
+    """从文本里抠出规范化后的 ID（补回连字符、去重、保持出现顺序）"""
+    return list(dict.fromkeys(f"{prefix}-{digits}" for digits in pattern.findall(text or "")))
 
 
 def deterministic_lookup(text: str) -> dict | None:
@@ -139,9 +148,9 @@ def deterministic_lookup(text: str) -> dict | None:
 
     没有 ID 时返回 None（那就没法确定性查询，只能引导用户提供 ID）。
     """
-    order_ids = _ORDER_ID_RE.findall(text or "")
-    user_ids = _USER_ID_RE.findall(text or "")
-    tracking_nos = _TRACKING_RE.findall(text or "")
+    order_ids = _canonical_ids("ORD", text, _ORDER_ID_RE)
+    user_ids = _canonical_ids("U", text, _USER_ID_RE)
+    tracking_nos = [m.upper() for m in _TRACKING_RE.findall(text or "")]
     if not (order_ids or user_ids or tracking_nos):
         return None
 

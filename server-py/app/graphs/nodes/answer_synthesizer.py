@@ -81,8 +81,12 @@ def answer_synthesizer_node(state, config: RunnableConfig = None):
     )
 
     # 出口接地校验：回答里的订单号必须在工具事实（或用户自己说的）里找得到，
-    # 否则说明模型在编订单——直接换成安全话术（线上出现过编造整张订单表的情况）
-    facts = grounding.facts_text(order_facts, rag_result, user_input)
+    # 否则说明模型在编订单——直接换成安全话术（线上出现过编造整张订单表的情况）。
+    # 本会话前面已经核实过的回答同样算事实来源，否则用户追问上一轮查到的订单
+    # 会被误判成编造、整段换成"没能核实到"。
+    facts = grounding.facts_text(
+        order_facts, rag_result, user_input, grounding.history_facts(state.get("messages"))
+    )
     result, incident = grounding.sanitize(result, facts, route="graph")
     if incident:
         print(f"[answerSynthesizer] 接地校验失败，已拦截编造回答：{incident.get('offending')}")

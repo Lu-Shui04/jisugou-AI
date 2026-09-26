@@ -8,7 +8,7 @@ import json
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agents.customer_agent import create_customer_agent
@@ -17,6 +17,7 @@ from app.db.redis_client import SESSION_TTL_SECONDS, append_turn
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
 from app.security import guard
+from app.tools.order_tools import deterministic_lookup
 from app.utils import grounding, handoff
 from app.utils.messages import to_lc_messages
 
@@ -41,6 +42,83 @@ class AgentRequest(BaseModel):
 
 def _send(event_type, data):
     return f"data: {json.dumps({'type': event_type, **data}, ensure_ascii=False)}\n\n"
+
+
+async def _react_stream(initial_messages: list, config: dict, usage: RequestUsage):
+    """跑一轮 ReAct Agent：边产出前端事件，边收集本轮的工具调用与回答
+
+    产出 ("event", SSE 文本) 交给调用方直接下发；跑完产出 ("result", {...})。
+    抽成生成器是为了「模型没调工具 → 我们替它查、再让它重说一遍」这段重跑逻辑。
+
+    两种流模式：
+        messages —— 模型逐 token 输出（Agent 页是真的边生成边显示）
+        updates  —— 节点级事件：工具调用与工具结果，用来驱动「调用工具」步骤条
+    """
+    answer = ""
+    final_message = ""
+    steps: list[dict] = []
+    tool_facts: list[str] = []
+
+    async for mode, data in _agent_app.astream(
+        {"messages": initial_messages},
+        config=config,
+        stream_mode=["updates", "messages"],
+    ):
+        if mode == "messages":
+            chunk, _meta = data
+            if isinstance(chunk, ToolMessage):
+                continue
+            content = getattr(chunk, "content", "")
+            if isinstance(content, str) and content:
+                answer += content
+                yield "event", _send("content", {"content": content})
+            continue
+
+        for value in data.values():
+            messages = value.get("messages") if isinstance(value, dict) else None
+            for message in messages or []:
+                if isinstance(message, ToolMessage):
+                    # 工具结果补到上一条步骤上
+                    if steps:
+                        steps[-1]["observation"] = message.content
+                    tool_facts.append(message.content or "")
+                    usage.stage("tool_result",
+                                tool=steps[-1].get("tool") if steps else "",
+                                observation=message.content, action="工具返回")
+                    continue
+
+                tool_calls = getattr(message, "tool_calls", None)
+                if tool_calls:
+                    # 进入工具调用轮：清掉上一轮的预告文字，再推送步骤
+                    if answer:
+                        answer = ""
+                        yield "event", _send("reset", {})
+                    for call in tool_calls:
+                        step = {
+                            "tool": call.get("name"),
+                            "toolInput": call.get("args"),
+                            "observation": "",
+                        }
+                        steps.append(step)
+                        usage.stage("tool", tool=call.get("name"),
+                                    toolInput=call.get("args"), action="调用工具")
+                        yield "event", _send("step", step)
+                elif getattr(message, "content", ""):
+                    # 最终回答（updates 里是完整文本，作为权威结果）
+                    final_message = message.content
+
+    yield "result", {"answer": answer, "final_message": final_message,
+                     "steps": steps, "tool_facts": tool_facts}
+
+
+def _seeded_tool_messages(preflight: dict) -> list:
+    """把确定性查询的结果摆成"模型自己刚调完工具"的消息，让它接着基于事实作答"""
+    calls, results = [], []
+    for index, step in enumerate(preflight["steps"]):
+        call_id = f"deterministic-{index}"
+        calls.append({"name": step["tool"], "args": step["input"], "id": call_id})
+        results.append(ToolMessage(content=step["obs"], tool_call_id=call_id, name=step["tool"]))
+    return [AIMessage(content="", tool_calls=calls), *results]
 
 
 @router.post("/stream")
@@ -142,61 +220,56 @@ async def agent_stream(req: AgentRequest):
             return
 
         try:
-            # 两种流模式：
-            #   messages —— 模型逐 token 输出（Agent 页现在是真的边生成边显示）
-            #   updates  —— 节点级事件：工具调用与工具结果，用来驱动「调用工具」步骤条
-            async for mode, data in _agent_app.astream(
-                {"messages": to_lc_messages(history) + [HumanMessage(content=req.message)]},
-                config={"callbacks": usage.callbacks},
-                stream_mode=["updates", "messages"],
+            conversation = to_lc_messages(history) + [HumanMessage(content=req.message)]
+
+            result = None
+            async for kind, payload in _react_stream(
+                conversation, {"callbacks": usage.callbacks}, usage
             ):
-                if mode == "messages":
-                    chunk, _meta = data
-                    if isinstance(chunk, ToolMessage):
-                        continue
-                    content = getattr(chunk, "content", "")
-                    if isinstance(content, str) and content:
-                        answer += content
-                        yield _send("content", {"content": content})
-                    continue
+                if kind == "event":
+                    yield payload
+                else:
+                    result = payload
+            answer = result["answer"]
+            final_message = result["final_message"]
+            steps = result["steps"]
+            tool_facts = result["tool_facts"]
 
-                for value in data.values():
-                    messages = value.get("messages") if isinstance(value, dict) else None
-                    for message in messages or []:
-                        if isinstance(message, ToolMessage):
-                            # 工具结果补到上一条步骤上
-                            if steps:
-                                steps[-1]["observation"] = message.content
-                            tool_facts.append(message.content or "")
-                            usage.stage("tool_result",
-                                        tool=steps[-1].get("tool") if steps else "",
-                                        observation=message.content, action="工具返回")
-                            continue
-
-                        tool_calls = getattr(message, "tool_calls", None)
-                        if tool_calls:
-                            # 进入工具调用轮：清掉上一轮的预告文字，再推送步骤
-                            if answer:
-                                answer = ""
-                                yield _send("reset", {})
-                            for call in tool_calls:
-                                step = {
-                                    "tool": call.get("name"),
-                                    "toolInput": call.get("args"),
-                                    "observation": "",
-                                }
-                                steps.append(step)
-                                usage.stage("tool", tool=call.get("name"),
-                                            toolInput=call.get("args"), action="调用工具")
-                                yield _send("step", step)
-                        elif getattr(message, "content", ""):
-                            # 最终回答（updates 里是完整文本，作为权威结果）
-                            final_message = message.content
+            # 模型这一轮一个工具都没调，但用户消息里带着 ID（U-xxx / ORD-xxx / 快递单号）：
+            # 线上事故：用户查完订单后再补一句 "U-103"，模型没查工具、直接拿上文作答，
+            # 出口接地校验判定"编造"、整段被换成"没能核实到" —— 数据其实一直查得到。
+            # 所以这里替它做确定性查询，步骤推给前端，再让模型基于真实事实重说一遍。
+            if not steps:
+                preflight = deterministic_lookup(req.message)
+                if preflight:
+                    for step in preflight["steps"]:
+                        record = {"tool": step["tool"], "toolInput": step["input"],
+                                  "observation": step["obs"]}
+                        steps.append(record)
+                        tool_facts.append(step["obs"])
+                        usage.stage("tool", tool=step["tool"], toolInput=step["input"],
+                                    action="模型未调用工具，改用确定性查询重查")
+                        yield _send("step", record)
+                    yield _send("reset", {})
+                    async for kind, payload in _react_stream(
+                        conversation + _seeded_tool_messages(preflight),
+                        {"callbacks": usage.callbacks}, usage,
+                    ):
+                        if kind == "event":
+                            yield payload
+                        else:
+                            answer = payload["answer"] or answer
+                            final_message = payload["final_message"] or final_message
+                            steps.extend(payload["steps"])
+                            tool_facts.extend(payload["tool_facts"])
 
             final_answer = final_message or answer
 
-            # 出口接地校验：回答里的订单号必须在工具返回的事实里（或用户自己说的）找得到
-            facts = grounding.facts_text(req.message, tool_facts)
+            # 出口接地校验：回答里的订单号必须找得到出处 —— 本轮工具事实、本会话已经核实过的
+            # 历史回答、或者用户自己说的
+            facts = grounding.facts_text(
+                req.message, tool_facts, grounding.history_facts(history)
+            )
             final_answer, incident = grounding.sanitize(final_answer, facts, route="agent")
             if incident:
                 usage.stage("grounding_blocked", **incident)
