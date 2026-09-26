@@ -1,0 +1,66 @@
+// client/src/composables/useGate.js
+// 开屏滑动验证的本地状态：门禁 Token、入口免验证窗口、失效回调。
+//
+// 门禁和后端是一对：Token 由服务端签发（POST /api/gate/verify），
+// 之后每个请求带 X-Gate-Token；没带 / 过期时后端 401，前端弹回开屏滑块。
+//
+// 这里有两个**不同**的时间概念，别混在一起：
+//   1. Token 有效期（后端签的 12 小时）—— 决定"正在用的会话会不会中途被踢"
+//   2. 入口免验证窗口（下面的 GATE_ENTRY_TTL_MS）—— 决定"关掉再打开要不要重拖"
+// 入口窗口只在新页面加载时检查一次，所以正在提问的人不会用着用着被弹回滑块。
+const TOKEN_KEY = 'jisu:gate-token';
+const VERIFIED_AT_KEY = 'jisu:gate-verified-at';
+
+/** 入口免验证窗口：距上次拖动超过这个时间，重新进入就要再拖一次 */
+export const GATE_ENTRY_TTL_MS = 60_000;
+
+export function getGateToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setGateToken(token) {
+  try {
+    localStorage.setItem(TOKEN_KEY, token || '');
+    localStorage.setItem(VERIFIED_AT_KEY, String(Date.now()));
+  } catch {}
+}
+
+export function clearGateToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(VERIFIED_AT_KEY);
+  } catch {}
+}
+
+/**
+ * 这次进入是否需要重新拖滑块。
+ * 只看时间戳，不看 Token 本身有没有过期 —— 会话中途不打断，
+ * 只有"重新打开页面"时才会问一次。
+ */
+export function gateEntryExpired() {
+  if (!getGateToken()) return true;
+  try {
+    const at = Number(localStorage.getItem(VERIFIED_AT_KEY) || 0);
+    if (!at) return true; // 旧版本留下的 Token 没有时间戳，按过期处理
+    return Date.now() - at > GATE_ENTRY_TTL_MS;
+  } catch {
+    return true;
+  }
+}
+
+// Token 失效（后端 401）时通知 App 重新弹滑块
+let requiredHandler = null;
+
+export function onGateRequired(handler) {
+  requiredHandler = handler;
+}
+
+export function notifyGateRequired() {
+  try {
+    requiredHandler?.();
+  } catch {}
+}

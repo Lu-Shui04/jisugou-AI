@@ -15,7 +15,7 @@ POST /api/chat/stream  - 流式对话（SSE，带会话缓存 + Token 统计）
 import json
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ from app.db.redis_client import SESSION_TTL_SECONDS, append_turn, ping as redis_
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
 from app.security import guard, identity
+from app.security.gate import require_gate
 from app.utils import grounding, handoff
 
 router = APIRouter()
@@ -68,8 +69,8 @@ async def health():
     }
 
 
-# ─── 普通对话接口 ────────────────────────────────────────────────
-@router.post("")
+# ─── 普通对话接口（要过开屏滑块：这是烧大模型额度的入口）─────────────
+@router.post("", dependencies=[Depends(require_gate)])
 async def chat(req: ChatRequest):
     if not req.message:
         return JSONResponse(status_code=400, content={"error": "message 字段不能为空"})
@@ -180,8 +181,8 @@ async def chat(req: ChatRequest):
         return JSONResponse(status_code=500, content={"error": "服务暂时不可用，请稍后重试"})
 
 
-# ─── 流式对话接口（SSE）─────────────────────────────────────────
-@router.post("/stream")
+# ─── 流式对话接口（SSE，同样要过开屏滑块）─────────────────────────
+@router.post("/stream", dependencies=[Depends(require_gate)])
 async def chat_stream(req: ChatRequest):
     if not req.message:
         return JSONResponse(status_code=400, content={"error": "message 字段不能为空"})

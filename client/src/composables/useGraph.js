@@ -2,7 +2,7 @@
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢聊天记录
 import { ref, nextTick, watch } from 'vue';
 import { useUser, ensureIdentity, onIdentityChange, recoverIdentity } from './useUser.js';
-import { API_BASE, authHeaders } from '../api.js';
+import { API_BASE, apiStream, authHeaders } from '../api.js';
 
 // 身份：服务端登录令牌（Authorization 头）；智能中枢里也有订单节点，同样按真实用户校验
 const { identity } = useUser();
@@ -84,9 +84,10 @@ export function useGraph() {
         .filter((m) => !m.loading)
         .map(({ role, content }) => ({ role, content }));
 
-      const response = await fetch(`${API_BASE}/graph/stream`, {
+      // apiStream：带上 X-Gate-Token，并把 401（滑块 Token 失效）转成"重新验证"
+      const response = await apiStream('/graph/stream', {
         method:  'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           message: userInput,
           history,

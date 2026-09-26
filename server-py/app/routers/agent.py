@@ -6,7 +6,7 @@ Token 统计：整条 Agent 链路（含多轮工具调用）的 token 消耗一
 """
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ from app.db.redis_client import SESSION_TTL_SECONDS, append_turn
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
 from app.security import guard, identity
+from app.security.gate import require_gate
 from app.tools.order_tools import deterministic_lookup
 from app.utils import grounding, handoff
 from app.utils.messages import to_lc_messages
@@ -121,7 +122,7 @@ def _seeded_tool_messages(preflight: dict) -> list:
     return [AIMessage(content="", tool_calls=calls), *results]
 
 
-@router.post("/stream")
+@router.post("/stream", dependencies=[Depends(require_gate)])
 async def agent_stream(req: AgentRequest):
     if not req.message:
         return JSONResponse(status_code=400, content={"error": "message 不能为空"})

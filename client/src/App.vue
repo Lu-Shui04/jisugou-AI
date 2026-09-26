@@ -1,6 +1,10 @@
 <!-- client/src/App.vue -->
 <template>
-  <div id="app" :data-build="BUILD_TAG">
+  <!-- 开屏滑动验证：没过滑块之前，整个应用（导航 / 四个页面 / 后台）都不渲染。
+       Token 由服务端签发，之后每个请求带 X-Gate-Token；失效时自动弹回这里。 -->
+  <SliderGate v-if="!verified" @passed="onGatePassed" />
+
+  <div v-else id="app" :data-build="BUILD_TAG">
     <nav class="global-nav">
       <!-- 移动端（≤768px）左上角三条杠，点开是菜单抽屉；桌面端不显示 -->
       <button
@@ -93,6 +97,8 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useUser } from './composables/useUser.js';
+import SliderGate from './components/SliderGate.vue';
+import { clearGateToken, gateEntryExpired, onGateRequired } from './composables/useGate.js';
 
 const route  = useRoute();
 const router = useRouter();
@@ -100,7 +106,16 @@ const router = useRouter();
 const { userId, userName, users, ready, switching, switchUser } = useUser();
 
 // 构建标记：只挂在 DOM 属性上，便于确认线上跑的是哪一版
-const BUILD_TAG = '2026-09-26.1';
+const BUILD_TAG = '2026-09-27.1';
+
+// ── 开屏门禁 ──────────────────────────────────────────────────────
+// 距上次拖动在 1 分钟以内就直接进；超过 1 分钟（含首次打开）先过滑块。
+// Token 失效时（后端 401）由 api.js 回调把 verified 置回 false，自动弹回滑块。
+const verified = ref(!gateEntryExpired());
+if (!verified.value) clearGateToken();
+
+const onGatePassed = () => { verified.value = true; };
+onGateRequired(() => { verified.value = false; });
 
 const isAdminPage = computed(() => route.path.startsWith('/admin'));
 

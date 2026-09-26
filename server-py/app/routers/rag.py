@@ -14,13 +14,14 @@ import json
 import os
 import uuid
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.chains.rag_chain import KNOWLEDGE_DIR, rag_chain_with_sources, stream_answer
 from app.observability.usage import RequestUsage
 from app.security import guard, identity
+from app.security.gate import require_gate
 from app.utils import handoff
 
 router = APIRouter()
@@ -128,7 +129,7 @@ def _send(event_type, data):
     return f"data: {json.dumps({'type': event_type, **data}, ensure_ascii=False)}\n\n"
 
 
-@router.post("/query")
+@router.post("/query", dependencies=[Depends(require_gate)])
 async def rag_query(req: RagRequest):
     if not req.question:
         return JSONResponse(status_code=400, content={"error": "question 不能为空"})

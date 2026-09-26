@@ -14,7 +14,16 @@ logging.basicConfig(
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import admin, agent, chat, graph, identity as identity_router, observability, rag
+from app.routers import (
+    admin,
+    agent,
+    chat,
+    gate,
+    graph,
+    identity as identity_router,
+    observability,
+    rag,
+)
 from app.security.middleware import IdentityMiddleware
 
 app = FastAPI(title="极速购 AI 客服系统")
@@ -29,6 +38,8 @@ app.add_middleware(
 # 后面所有工具 / 节点 / 会话缓存都从上下文里取（请求体里的 user_id 不参与鉴权）
 app.add_middleware(IdentityMiddleware)
 
+# 开屏人机验证（滑块）：下发 challenge / 校验并签发 Token
+app.include_router(gate.router, prefix="/api/gate")
 # 身份：登录（选择用户）/ 当前身份 / 权限事件
 app.include_router(identity_router.router, prefix="/api/identity")
 app.include_router(chat.router, prefix="/api/chat")

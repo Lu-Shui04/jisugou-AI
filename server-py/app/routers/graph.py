@@ -5,7 +5,7 @@ Token 统计：把 callbacks 挂在 graph.astream 上，各节点内部的 LLM �
 """
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage, ToolMessage
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from app.db.redis_client import SESSION_TTL_SECONDS, append_turn
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
 from app.security import guard, identity
+from app.security.gate import require_gate
 from app.utils import handoff
 from app.utils.messages import to_lc_messages
 
@@ -51,7 +52,7 @@ def _send(event_type, data):
     return f"data: {json.dumps({'type': event_type, **data}, ensure_ascii=False)}\n\n"
 
 
-@router.post("/stream")
+@router.post("/stream", dependencies=[Depends(require_gate)])
 async def graph_stream(req: GraphRequest):
     if not req.message:
         return JSONResponse(status_code=400, content={"error": "message 不能为空"})

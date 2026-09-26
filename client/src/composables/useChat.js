@@ -11,7 +11,7 @@
  */
 import { ref, nextTick, watch } from 'vue';
 import { useUser, ensureIdentity, onIdentityChange } from './useUser.js';
-import { API_BASE, authHeaders } from '../api.js';
+import { API_BASE, apiStream, authHeaders } from '../api.js';
 
 // 身份：服务端登录令牌（随每个请求的 Authorization 头带给后端，
 // 后端据此认定"你是谁"；请求体里的 user_id 只用于后台展示）
@@ -100,9 +100,10 @@ export function useChat() {
         .slice(-10)
         .map(({ role, content }) => ({ role, content }));
 
-      const response = await fetch(API_BASE + '/chat/stream', {
+      // apiStream：带上 X-Gate-Token，并把 401（滑块 Token 失效）转成"重新验证"
+      const response = await apiStream('/chat/stream', {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userInput,
           history,

@@ -2,7 +2,7 @@
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢问答记录
 import { ref, nextTick, watch } from 'vue';
 import { useUser, ensureIdentity, onIdentityChange } from './useUser.js';
-import { API_BASE, authHeaders } from '../api.js';
+import { apiStream } from '../api.js';
 
 // 身份：服务端登录令牌（知识库是公共数据，但身份同样由服务端认定）
 const { identity } = useUser();
@@ -55,9 +55,10 @@ export function useRag() {
     messages.value.push({ role: 'assistant', content: '', sources: [], loading: true });
 
     try {
-      const response = await fetch(`${API_BASE}/rag/query`, {
+      // apiStream：带上 X-Gate-Token，并把 401（滑块 Token 失效）转成"重新验证"
+      const response = await apiStream('/rag/query', {
         method:  'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ question, ...identity() }),
       });
 
