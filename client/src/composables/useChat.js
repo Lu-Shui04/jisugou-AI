@@ -10,10 +10,11 @@
  * 这里把标记解析成跳转按钮，正文里不留标记。
  */
 import { ref, nextTick, watch } from 'vue';
-import { useUser } from './useUser.js';
-import { API_BASE } from '../api.js';
+import { useUser, ensureIdentity, onIdentityChange } from './useUser.js';
+import { API_BASE, authHeaders } from '../api.js';
 
-// 访客身份：随请求带给后端，管理员后台按用户区分聊天记录
+// 身份：服务端登录令牌（随每个请求的 Authorization 头带给后端，
+// 后端据此认定"你是谁"；请求体里的 user_id 只用于后台展示）
 const { identity } = useUser();
 
 // 会话 ID：后端用它做 Redis 会话缓存（key = session:{session_id}，TTL 30 分钟）
@@ -66,10 +67,25 @@ watch(messages, (val) => {
   } catch {}
 }, { deep: true });
 
+// 换身份（左上角切换用户）：上一个用户的会话与聊天记录一律清掉 ——
+// 历史里可能有他的订单号，留着就会被当成上下文带进新用户的对话
+function resetForNewIdentity() {
+  messages.value = [];
+  streamText.value = '';
+  error.value = '';
+  sessionId.value = '';
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(MESSAGES_KEY);
+  } catch {}
+}
+onIdentityChange(resetForNewIdentity);
+
 export function useChat() {
   // ─── 发送消息（流式）───────────────────────────────────────────
   const sendMessage = async (userInput, scrollCallback) => {
     if (!userInput.trim() || streaming.value) return;
+    await ensureIdentity(); // 令牌就绪再发（页面刚打开就点发送也不会漏）
 
     error.value = '';
     messages.value.push({ role: 'user', content: userInput });
@@ -86,7 +102,7 @@ export function useChat() {
 
       const response = await fetch(API_BASE + '/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           message: userInput,
           history,
@@ -168,7 +184,10 @@ export function useChat() {
     error.value = '';
     // 同时清掉服务端会话缓存
     if (sessionId.value) {
-      fetch(API_BASE + '/observability/session/' + sessionId.value, { method: 'DELETE' }).catch(() => {});
+      fetch(API_BASE + '/observability/session/' + sessionId.value, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      }).catch(() => {});
     }
     sessionId.value = '';
     localStorage.removeItem(SESSION_KEY);

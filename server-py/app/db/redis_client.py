@@ -2,8 +2,13 @@
 
 会话上下文以 session_id 为 key 存放在 Redis：
 - key   : session:{session_id}
-- value : JSON 数组 [{"role": "user"|"assistant", "content": "..."}]
+- value : {"owner": "U-100", "messages": [{"role": ..., "content": ...}]}
 - TTL   : SESSION_TTL_SECONDS，默认 1800 秒（30 分钟），每次写入自动续期
+
+**为什么 value 里要存 owner**：会话里装着用户问过的订单、看到过的数据。
+如果只按 session_id 取会话，那么换一个用户身份（或把 session_id 猜/抄过来）就能
+读走别人上一轮的上下文 —— 上下文进了提示词，等于订单数据被读走。
+所以读取时用 owner 做归属校验：不是本人的会话，一律当"没有会话"（fail closed）。
 
 Redis 不可用时自动降级：读写失败只记日志，接口回退到请求体里的 history，
 不影响主流程。
@@ -18,6 +23,7 @@ from redis.backoff import NoBackoff
 from redis.retry import Retry
 
 from app.resilience import CircuitOpenError, get_breaker
+from app.security import identity
 
 logger = logging.getLogger("jisu.redis")
 
@@ -68,8 +74,31 @@ def get_circuit():
 
 
 def session_key(session_id: str) -> str:
-    """会话缓存 key：直接使用 session_id"""
+    """会话缓存 key：直接使用 session_id（归属校验放在 value 的 owner 字段上）"""
     return f"session:{session_id}"
+
+
+def _decode(raw: str) -> tuple[str, list]:
+    """解析缓存内容 → (owner, messages)
+
+    兼容旧格式（纯数组）：当作"没有归属信息"的会话处理 —— 对已登录用户来说
+    这种会话一律不认（宁可让他重开一轮，也不能赌它是本人的）。
+    """
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return "", []
+    if isinstance(payload, list):
+        return "", payload
+    if isinstance(payload, dict):
+        messages = payload.get("messages")
+        return str(payload.get("owner") or ""), (messages if isinstance(messages, list) else [])
+    return "", []
+
+
+def _encode(history: list, owner: str) -> str:
+    return json.dumps({"owner": owner or "", "messages": history[-SESSION_MAX_MESSAGES:]},
+                      ensure_ascii=False)
 
 
 async def ping() -> bool:
@@ -82,8 +111,25 @@ async def ping() -> bool:
         return False
 
 
-async def get_history(session_id: str) -> list[dict]:
-    """读取会话历史；Redis 不可用或没有数据时返回空列表，由调用方降级"""
+async def session_owner(session_id: str) -> str:
+    """这个会话是谁的（读不到时返回空串）"""
+    if not session_id:
+        return ""
+    try:
+        async with get_circuit().aguard():
+            raw = await get_redis().get(session_key(session_id))
+        return _decode(raw)[0] if raw else ""
+    except Exception as err:
+        logger.warning("读取会话归属失败: %s", err)
+        return ""
+
+
+async def get_history(session_id: str, owner: str | None = None) -> list[dict]:
+    """读取会话历史；Redis 不可用或没有数据时返回空列表，由调用方降级
+
+    owner 不为 None 时做归属校验：不是这个用户的会话，直接当没有（并记一条权限事件）。
+    owner=None 只有管理后台/可观测接口在用（管理员看全部会话）。
+    """
     if not session_id:
         return []
     try:
@@ -91,45 +137,59 @@ async def get_history(session_id: str) -> list[dict]:
             raw = await get_redis().get(session_key(session_id))
         if not raw:
             return []
-        history = json.loads(raw)
-        return history if isinstance(history, list) else []
+        stored_owner, history = _decode(raw)
+        if owner is not None and stored_owner != (owner or ""):
+            # 会话是别人的：一个字都不返回，并且留痕（可能是 session_id 被抄走了）
+            identity.record_incident("session_owner_mismatch", session_id=session_id,
+                                     actor=owner or "anonymous", owner=stored_owner or "unknown")
+            return []
+        return history
     except Exception as err:
         logger.warning("读取会话缓存失败，降级为请求体历史: %s", err)
         return []
 
 
-async def save_history(session_id: str, history: list[dict]) -> None:
-    """写入会话历史，TTL 续期为 30 分钟"""
+async def save_history(session_id: str, history: list[dict], owner: str = "") -> None:
+    """写入会话历史（连同归属），TTL 续期为 30 分钟"""
     if not session_id:
         return
     try:
-        payload = json.dumps(history[-SESSION_MAX_MESSAGES:], ensure_ascii=False)
+        payload = _encode(history, owner)
         async with get_circuit().aguard():
             await get_redis().set(session_key(session_id), payload, ex=SESSION_TTL_SECONDS)
     except Exception as err:
         logger.warning("写入会话缓存失败: %s", err)
 
 
-async def append_turn(session_id: str, user_message: str, assistant_message: str = "") -> None:
-    """追加一轮问答并刷新 TTL"""
+async def append_turn(session_id: str, user_message: str, assistant_message: str = "",
+                      owner: str = "") -> None:
+    """追加一轮问答并刷新 TTL（只能追加到自己的会话上）"""
     if not session_id:
         return
-    history = await get_history(session_id)
+    history = await get_history(session_id, owner=owner)
     history.append({"role": "user", "content": user_message})
     if assistant_message:
         history.append({"role": "assistant", "content": assistant_message})
-    await save_history(session_id, history)
+    await save_history(session_id, history, owner=owner)
 
 
-async def clear_session(session_id: str) -> None:
-    """删除会话缓存"""
+async def clear_session(session_id: str, owner: str | None = None) -> bool:
+    """删除会话缓存；给了 owner 就只能删自己的（删别人的返回 False 并留痕）"""
     if not session_id:
-        return
+        return False
+    if owner is not None:
+        stored_owner = await session_owner(session_id)
+        if stored_owner and stored_owner != owner:
+            identity.record_incident("session_clear_denied", session_id=session_id,
+                                     actor=owner or "anonymous", owner=stored_owner)
+            return False
     try:
         async with get_circuit().aguard():
             await get_redis().delete(session_key(session_id))
+        return True
     except Exception as err:
         logger.warning("清空会话缓存失败: %s", err)
+        return False
 
 
 async def session_ttl(session_id: str) -> int:

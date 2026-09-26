@@ -16,7 +16,7 @@ from app.chains import kb_bridge
 from app.db.redis_client import SESSION_TTL_SECONDS, append_turn
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
-from app.security import guard
+from app.security import guard, identity
 from app.tools.order_tools import deterministic_lookup
 from app.utils import grounding, handoff
 from app.utils.messages import to_lc_messages
@@ -127,12 +127,16 @@ async def agent_stream(req: AgentRequest):
         return JSONResponse(status_code=400, content={"error": "message 不能为空"})
 
     async def event_generator():
+        # 身份只认令牌：请求体里的 user_id 是"客户端声称"，不参与鉴权（越权尝试会留痕）
+        principal = identity.current_principal()
+        identity.audit_claim(principal, req.user_id, route="agent")
+        owner = principal.user_id
         session_id, history = await resolve_session(
-            req.session_id, req.history, req.message
+            req.session_id, req.history, req.message, principal=principal
         )
         usage = RequestUsage(
             route="agent", session_id=session_id,
-            user_id=req.user_id or "", user_name=req.user_name or "",
+            user_id=owner, user_name=principal.user_name,
         )
         usage.set_question(req.message)
         usage.stage("input", text=req.message, chars=len(req.message),
@@ -144,6 +148,18 @@ async def agent_stream(req: AgentRequest):
         tool_facts: list[str] = []
 
         yield _send("session", {"session_id": session_id, "ttl": SESSION_TTL_SECONDS})
+
+        # 订单页是"有数据权限"的入口：不知道你是谁就不办事（fail closed，零 token）
+        if principal.anonymous:
+            message = principal.denial_message()
+            usage.stage("identity_required", **principal.as_dict())
+            usage.set_answer(message)
+            usage.set_error("unauthenticated/%s" % principal.reason)
+            yield _send("error", {"content": message, "error": message,
+                                  "blocked": True, "code": "UNAUTHENTICATED"})
+            yield _send("usage", {"usage": await usage.finish(status="blocked")})
+            yield _send("done", {"done": True})
+            return
 
         # 提示词安全检查（白名单 → 规则 → 小模型）
         verdict = await guard.check(
@@ -176,7 +192,7 @@ async def agent_stream(req: AgentRequest):
             reply = plan["reply"]
             yield _send("content", {"content": reply})
             yield _send("answer", {"content": reply})
-            await append_turn(session_id, req.message, reply)
+            await append_turn(session_id, req.message, reply, owner=owner)
             usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
             usage.stage("answer", text=reply, chars=len(reply))
             usage.set_answer(reply)
@@ -204,7 +220,7 @@ async def agent_stream(req: AgentRequest):
                     yield _send("content", {"content": hint})
                 # 不再自动补人工电话：咨询类问题正常回答即可
                 yield _send("answer", {"content": kb_answer})
-                await append_turn(session_id, req.message, kb_answer)
+                await append_turn(session_id, req.message, kb_answer, owner=owner)
                 usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
                 usage.stage("answer", text=kb_answer, chars=len(kb_answer))
                 usage.set_answer(kb_answer)
@@ -223,13 +239,16 @@ async def agent_stream(req: AgentRequest):
             conversation = to_lc_messages(history) + [HumanMessage(content=req.message)]
 
             result = None
-            async for kind, payload in _react_stream(
-                conversation, {"callbacks": usage.callbacks}, usage
-            ):
-                if kind == "event":
-                    yield payload
-                else:
-                    result = payload
+            # 显式带上当前身份执行：工具跑在子线程里，身份靠 ContextVar 传递，
+            # 这里再钉一次，确保"每一步都带着真实用户 ID"
+            with identity.principal_scope(principal):
+                async for kind, payload in _react_stream(
+                    conversation, {"callbacks": usage.callbacks}, usage
+                ):
+                    if kind == "event":
+                        yield payload
+                    else:
+                        result = payload
             answer = result["answer"]
             final_message = result["final_message"]
             steps = result["steps"]
@@ -240,7 +259,7 @@ async def agent_stream(req: AgentRequest):
             # 出口接地校验判定"编造"、整段被换成"没能核实到" —— 数据其实一直查得到。
             # 所以这里替它做确定性查询，步骤推给前端，再让模型基于真实事实重说一遍。
             if not steps:
-                preflight = deterministic_lookup(req.message)
+                preflight = deterministic_lookup(req.message, principal)
                 if preflight:
                     for step in preflight["steps"]:
                         record = {"tool": step["tool"], "toolInput": step["input"],
@@ -251,17 +270,18 @@ async def agent_stream(req: AgentRequest):
                                     action="模型未调用工具，改用确定性查询重查")
                         yield _send("step", record)
                     yield _send("reset", {})
-                    async for kind, payload in _react_stream(
-                        conversation + _seeded_tool_messages(preflight),
-                        {"callbacks": usage.callbacks}, usage,
-                    ):
-                        if kind == "event":
-                            yield payload
-                        else:
-                            answer = payload["answer"] or answer
-                            final_message = payload["final_message"] or final_message
-                            steps.extend(payload["steps"])
-                            tool_facts.extend(payload["tool_facts"])
+                    with identity.principal_scope(principal):
+                        async for kind, payload in _react_stream(
+                            conversation + _seeded_tool_messages(preflight),
+                            {"callbacks": usage.callbacks}, usage,
+                        ):
+                            if kind == "event":
+                                yield payload
+                            else:
+                                answer = payload["answer"] or answer
+                                final_message = payload["final_message"] or final_message
+                                steps.extend(payload["steps"])
+                                tool_facts.extend(payload["tool_facts"])
 
             final_answer = final_message or answer
 
@@ -280,7 +300,7 @@ async def agent_stream(req: AgentRequest):
             usage.set_steps(steps)
             yield _send("answer", {"content": final_answer})
             if final_answer:
-                await append_turn(session_id, req.message, final_answer)
+                await append_turn(session_id, req.message, final_answer, owner=owner)
         except Exception as err:
             status = "error"
             usage.set_error(err)

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from app.chains.rag_chain import KNOWLEDGE_DIR, rag_chain_with_sources, stream_answer
 from app.observability.usage import RequestUsage
-from app.security import guard
+from app.security import guard, identity
 from app.utils import handoff
 
 router = APIRouter()
@@ -134,11 +134,15 @@ async def rag_query(req: RagRequest):
         return JSONResponse(status_code=400, content={"error": "question 不能为空"})
 
     async def event_generator():
+        # 知识库是公共数据，匿名也能查；但身份同样只认令牌（请求体里的 user_id 只当昵称）
+        principal = identity.current_principal()
+        identity.audit_claim(principal, req.user_id, route="rag")
         session_id = (req.session_id or "").strip() or uuid.uuid4().hex
         usage = RequestUsage(
             route="rag", session_id=session_id,
-            user_id=req.user_id or "", user_name=req.user_name or "",
+            user_id=principal.user_id, user_name=principal.user_name,
         )
+        usage.stage("identity", **principal.as_dict(), claimed=req.user_id or "")
         usage.set_question(req.question)
         usage.stage("input", text=req.question, chars=len(req.question))
         status = "ok"

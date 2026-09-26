@@ -28,7 +28,7 @@ from app.chains.basic_chat import (
 from app.db.redis_client import SESSION_TTL_SECONDS, append_turn, ping as redis_ping
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
-from app.security import guard
+from app.security import guard, identity
 from app.utils import grounding, handoff
 
 router = APIRouter()
@@ -74,13 +74,18 @@ async def chat(req: ChatRequest):
     if not req.message:
         return JSONResponse(status_code=400, content={"error": "message 字段不能为空"})
 
+    # 身份只认令牌：请求体里的 user_id 是"客户端声称"，不参与鉴权（越权尝试会留痕）
+    principal = identity.current_principal()
+    identity.audit_claim(principal, req.user_id, route="chat")
+    owner = principal.user_id
     session_id, history = await resolve_session(
-        req.session_id, req.history, req.message
+        req.session_id, req.history, req.message, principal=principal
     )
     usage = RequestUsage(
         route="chat", session_id=session_id,
-        user_id=req.user_id or "", user_name=req.user_name or "",
+        user_id=owner, user_name=principal.user_name,
     )
+    usage.stage("identity", **principal.as_dict(), claimed=req.user_id or "")
     usage.set_question(req.message)
     usage.stage("input", text=req.message, chars=len(req.message),
                 history_rounds=len(history or []))
@@ -112,7 +117,7 @@ async def chat(req: ChatRequest):
                     latency_ms=judge.get("latency_ms"), action=judge.get("reason") or "")
     if plan["reply"]:
         reply = plan["reply"]
-        await append_turn(session_id, req.message, reply)
+        await append_turn(session_id, req.message, reply, owner=owner)
         usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
         usage.set_answer(reply)
         return {
@@ -128,7 +133,7 @@ async def chat(req: ChatRequest):
         async for chunk in kb_bridge.stream(req.message, config={"callbacks": usage.callbacks}):
             reply += chunk
         # 不再自动补人工电话：只有"明确要办"的动作类才会给人工通道
-        await append_turn(session_id, req.message, reply)
+        await append_turn(session_id, req.message, reply, owner=owner)
         usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
         usage.set_answer(reply)
         return {
@@ -159,7 +164,7 @@ async def chat(req: ChatRequest):
         usage.stage("grounding", blocked=bool(grounding_incident),
                     **(grounding_incident or {}))
         # 写入会话缓存并续期 TTL
-        await append_turn(session_id, req.message, response)
+        await append_turn(session_id, req.message, response, owner=owner)
         usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
         usage.stage("answer", text=response, chars=len(response))
         usage.set_answer(response)
@@ -182,13 +187,18 @@ async def chat_stream(req: ChatRequest):
         return JSONResponse(status_code=400, content={"error": "message 字段不能为空"})
 
     async def event_generator():
+        # 身份只认令牌：请求体里的 user_id 是"客户端声称"，不参与鉴权（越权尝试会留痕）
+        principal = identity.current_principal()
+        identity.audit_claim(principal, req.user_id, route="chat")
+        owner = principal.user_id
         session_id, history = await resolve_session(
-            req.session_id, req.history, req.message
+            req.session_id, req.history, req.message, principal=principal
         )
         usage = RequestUsage(
             route="chat", session_id=session_id,
-            user_id=req.user_id or "", user_name=req.user_name or "",
+            user_id=owner, user_name=principal.user_name,
         )
+        usage.stage("identity", **principal.as_dict(), claimed=req.user_id or "")
         usage.set_question(req.message)
         usage.stage("input", text=req.message, chars=len(req.message),
                     history_rounds=len(history or []))
@@ -226,7 +236,7 @@ async def chat_stream(req: ChatRequest):
         if plan["reply"]:
             reply = plan["reply"]
             yield _send("content", {"content": reply})
-            await append_turn(session_id, req.message, reply)
+            await append_turn(session_id, req.message, reply, owner=owner)
             usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
             usage.stage("answer", text=reply, chars=len(reply))
             usage.set_answer(reply)
@@ -263,7 +273,7 @@ async def chat_stream(req: ChatRequest):
                     kb_answer += guide
                     yield _send("content", {"content": guide})
 
-                await append_turn(session_id, req.message, kb_answer)
+                await append_turn(session_id, req.message, kb_answer, owner=owner)
                 usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
                 usage.stage("answer", text=kb_answer, chars=len(kb_answer))
                 usage.set_answer(kb_answer)
@@ -311,7 +321,7 @@ async def chat_stream(req: ChatRequest):
 
         # 会话落缓存（续期 30 分钟）
         if answer:
-            await append_turn(session_id, req.message, answer)
+            await append_turn(session_id, req.message, answer, owner=owner)
             usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
         usage.stage("answer", text=answer, chars=len(answer))
         usage.set_answer(answer)

@@ -8,6 +8,7 @@
 - 降级：最终仍失败时返回一段可读的 error JSON，让模型能告诉用户"稍后再试"，
   而不是把异常抛出去把整条链路打断
 """
+import contextvars
 import functools
 import json
 import logging
@@ -31,7 +32,11 @@ class ToolTimeoutError(TimeoutError):
 def _call_with_timeout(fn: Callable, args: tuple, kwargs: dict, timeout: float) -> Any:
     pool = ThreadPoolExecutor(max_workers=1)
     try:
-        future = pool.submit(fn, *args, **kwargs)
+        # concurrent.futures 的新线程**不会**继承 ContextVar（它没有 asyncio 那套
+        # "创建任务时复制上下文"的语义）。不显式 copy_context，工具函数里读到的
+        # "当前登录用户"会退化成匿名 —— 权限校验会因此静默失效，所以必须带上。
+        context = contextvars.copy_context()
+        future = pool.submit(context.run, fn, *args, **kwargs)
         return future.result(timeout=timeout)
     except FuturesTimeout as err:
         raise ToolTimeoutError(f"工具调用超过 {timeout}s 未返回") from err

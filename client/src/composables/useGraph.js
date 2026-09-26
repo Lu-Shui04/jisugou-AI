@@ -1,10 +1,10 @@
 // client/src/composables/useGraph.js
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢聊天记录
 import { ref, nextTick, watch } from 'vue';
-import { useUser } from './useUser.js';
-import { API_BASE } from '../api.js';
+import { useUser, ensureIdentity, onIdentityChange, recoverIdentity } from './useUser.js';
+import { API_BASE, authHeaders } from '../api.js';
 
-// 访客身份：随请求带给后端，管理员后台按用户区分聊天记录
+// 身份：服务端登录令牌（Authorization 头）；智能中枢里也有订单节点，同样按真实用户校验
 const { identity } = useUser();
 
 export const NODE_LABELS = {
@@ -47,9 +47,23 @@ watch(messages, (val) => {
   } catch {}
 }, { deep: true });
 
+// 换身份：清掉上一个用户的对话与会话（里面可能有他的订单）
+function resetForNewIdentity() {
+  messages.value    = [];
+  currentNode.value = '';
+  error.value       = '';
+  sessionId.value   = '';
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(MESSAGES_KEY);
+  } catch {}
+}
+onIdentityChange(resetForNewIdentity);
+
 export function useGraph() {
   const sendMessage = async (userInput, scrollCallback) => {
     if (!userInput.trim() || loading.value) return;
+    await ensureIdentity(); // 令牌就绪再发
 
     error.value       = '';
     currentNode.value = '';
@@ -72,7 +86,7 @@ export function useGraph() {
 
       const response = await fetch(`${API_BASE}/graph/stream`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body:    JSON.stringify({
           message: userInput,
           history,
@@ -162,6 +176,8 @@ export function useGraph() {
             }
 
             if (parsed.type === 'error') {
+              // 服务端说"没认到你"（令牌失效）：重新登录一次，用户再点一次就能过
+              if (parsed.code === 'UNAUTHENTICATED') recoverIdentity();
               messages.value[assistantIndex] = {
                 ...messages.value[assistantIndex],
                 content: parsed.content,
@@ -186,7 +202,10 @@ export function useGraph() {
     currentNode.value = '';
     error.value       = '';
     if (sessionId.value) {
-      fetch(`${API_BASE}/observability/session/${sessionId.value}`, { method: 'DELETE' }).catch(() => {});
+      fetch(`${API_BASE}/observability/session/${sessionId.value}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      }).catch(() => {});
     }
     sessionId.value = '';
     localStorage.removeItem(SESSION_KEY);

@@ -10,6 +10,10 @@ class GraphState(TypedDict):
 
     user_input: str
 
+    # 当前登录用户的真实 ID（由路由从令牌里取出来放进状态）。
+    # 订单节点跑在子线程里，ContextVar 未必跟着传过去，所以身份随状态显式流转。
+    authenticated_user_id: str
+
     # 主意图（兼容旧字段）：order | knowledge | general
     intent: str
     # 一句话可能同时涉及多个意图，例如 ["order", "knowledge"]

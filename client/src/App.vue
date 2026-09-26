@@ -17,6 +17,23 @@
       </button>
 
       <div class="nav-left">
+        <!-- 左上角身份切换：进系统第一步就是选"我是谁"。
+             选完由服务端签发令牌，之后每个请求都带着它；订单数据只认这个身份，
+             请求体里改 user_id 没用（后端拿令牌里的用户 ID 做校验）。 -->
+        <label class="user-switch" :title="switchTitle">
+          <svg class="icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.42 0-8 2.24-8 5v1h16v-1c0-2.76-3.58-5-8-5Z"
+            />
+          </svg>
+          <select :value="userId" :disabled="!ready || switching" @change="onSwitchUser">
+            <option v-for="item in users" :key="item.user_id" :value="item.user_id">
+              {{ item.user_id }} · {{ item.name }}{{ item.note ? '（' + item.note + '）' : '' }}
+            </option>
+          </select>
+        </label>
+
         <!-- 左上角管理员入口：免登录，点开直接进 -->
         <button
           class="admin-entry"
@@ -40,9 +57,7 @@
         <router-link to="/agent">订单查询</router-link>
         <router-link to="/rag">知识库</router-link>
         <router-link to="/graph">智能中枢</router-link>
-        <span class="nav-user" :title="'访客标识：' + userId + '（点击修改昵称）'" @click="renameUser">
-          {{ userName }}
-        </span>
+        <span class="nav-user" :title="switchTitle">{{ userName || '未登录' }}</span>
       </div>
     </nav>
 
@@ -54,8 +69,13 @@
         <router-link to="/rag" @click="menuOpen = false"><span>📚</span>知识库</router-link>
         <router-link to="/graph" @click="menuOpen = false"><span>🧭</span>智能中枢</router-link>
         <router-link to="/admin" class="drawer-admin" @click="menuOpen = false"><span>🔒</span>管理员后台</router-link>
-        <div class="drawer-user" @click="menuOpen = false; renameUser()">
-          <span>👤</span>{{ userName }}（点击改昵称）
+        <div class="drawer-user">
+          <span>👤</span>
+          <select :value="userId" :disabled="!ready || switching" @change="onSwitchUser">
+            <option v-for="item in users" :key="item.user_id" :value="item.user_id">
+              {{ item.user_id }} · {{ item.name }}{{ item.note ? '（' + item.note + '）' : '' }}
+            </option>
+          </select>
         </div>
       </div>
     </div>
@@ -76,10 +96,11 @@ import { useUser } from './composables/useUser.js';
 
 const route  = useRoute();
 const router = useRouter();
-const { userId, userName, rename } = useUser();
+// 身份：服务端签发的登录令牌（左上角切换用户 = 换一个身份登录）
+const { userId, userName, users, ready, switching, switchUser } = useUser();
 
 // 构建标记：只挂在 DOM 属性上，便于确认线上跑的是哪一版
-const BUILD_TAG = '2026-09-25.2';
+const BUILD_TAG = '2026-09-26.1';
 
 const isAdminPage = computed(() => route.path.startsWith('/admin'));
 
@@ -92,10 +113,18 @@ const goAdmin = () => {
   router.push('/admin');
 };
 
-// 昵称用于管理员后台区分「不同用户与 AI 的聊天记录」
-const renameUser = () => {
-  const next = window.prompt('修改昵称（管理员后台按昵称区分用户）', userName.value);
-  if (next !== null) rename(next);
+// 切换用户：换一枚服务端令牌，并清掉上一个身份留下的会话与聊天记录
+const switchTitle = computed(() => (ready.value
+  ? `当前身份：${userId.value} ${userName.value}（订单数据只认这个身份）`
+  : '正在登录…'));
+
+const onSwitchUser = async (event) => {
+  const next = event.target.value;
+  const ok = await switchUser(next);
+  if (!ok) {
+    event.target.value = userId.value;
+    window.alert('切换用户失败，请重试');
+  }
 };
 
 // ── 版本检测 ──────────────────────────────────────────────────────
@@ -215,6 +244,34 @@ body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #f8faf
 .nav-links a:hover        { color: #fff; background: #334155; }
 .nav-links a.router-link-active { color: #fff; background: #2563eb; }
 
+/* 左上角身份切换器（谁在看这份数据，由它决定） */
+.user-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid #475569;
+  background: #0f172a;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all .15s;
+}
+.user-switch:hover { border-color: #38bdf8; }
+.user-switch select {
+  background: transparent;
+  border: 0;
+  color: #e2e8f0;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  max-width: 170px;
+}
+.user-switch select:disabled { color: #94a3b8; cursor: progress; }
+.user-switch select option { background: #0f172a; color: #e2e8f0; }
+
 .nav-user {
   margin-left: 8px;
   font-size: 12px;
@@ -270,7 +327,8 @@ body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #f8faf
   }
   .nav-burger.open { background: #2563eb; border-color: #2563eb; color: #fff; }
 
-  /* 桌面端的入口按钮与链接行收进抽屉 */
+  /* 桌面端的身份切换、入口按钮与链接行收进抽屉 */
+  .user-switch { display: none; }
   .admin-entry { display: none; }
   .nav-links   { display: none; }
   .nav-left    { gap: 8px; min-width: 0; }
@@ -311,5 +369,15 @@ body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #f8faf
   .drawer-user span { font-size: 16px; }
   .drawer-admin { border: 1px solid #334155; }
   .drawer-user  { color: #94a3b8; font-size: 13px; }
+  .drawer-user select {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    color: #e2e8f0;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+  }
+  .drawer-user select option { background: #172033; color: #e2e8f0; }
 }
 </style>

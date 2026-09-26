@@ -14,7 +14,7 @@ from app.graphs.customer_graph import build_customer_graph
 from app.db.redis_client import SESSION_TTL_SECONDS, append_turn
 from app.db.session import resolve_session
 from app.observability.usage import RequestUsage
-from app.security import guard
+from app.security import guard, identity
 from app.utils import handoff
 from app.utils.messages import to_lc_messages
 
@@ -57,12 +57,16 @@ async def graph_stream(req: GraphRequest):
         return JSONResponse(status_code=400, content={"error": "message 不能为空"})
 
     async def event_generator():
+        # 身份只认令牌：请求体里的 user_id 是"客户端声称"，不参与鉴权（越权尝试会留痕）
+        principal = identity.current_principal()
+        identity.audit_claim(principal, req.user_id, route="graph")
+        owner = principal.user_id
         session_id, history = await resolve_session(
-            req.session_id, req.history, req.message
+            req.session_id, req.history, req.message, principal=principal
         )
         usage = RequestUsage(
             route="graph", session_id=session_id,
-            user_id=req.user_id or "", user_name=req.user_name or "",
+            user_id=owner, user_name=principal.user_name,
         )
         usage.set_question(req.message)
         usage.stage("input", text=req.message, chars=len(req.message),
@@ -74,6 +78,18 @@ async def graph_stream(req: GraphRequest):
         nodes: list[dict] = []
 
         yield _send("session", {"session_id": session_id, "ttl": SESSION_TTL_SECONDS})
+
+        # 智能中枢里有订单节点，同样属于"有数据权限"的入口：不知道你是谁就不进图
+        if principal.anonymous:
+            message = principal.denial_message()
+            usage.stage("identity_required", **principal.as_dict())
+            usage.set_answer(message)
+            usage.set_error("unauthenticated/%s" % principal.reason)
+            yield _send("error", {"content": message, "error": message,
+                                  "blocked": True, "code": "UNAUTHENTICATED"})
+            yield _send("usage", {"usage": await usage.finish(status="blocked")})
+            yield _send("done", {"done": True})
+            return
 
         # 提示词安全检查：命中就不进图，省掉整条链路的 token
         verdict = await guard.check(
@@ -103,7 +119,7 @@ async def graph_stream(req: GraphRequest):
         if reply:
             yield _send("content", {"content": reply})
             yield _send("answer", {"content": reply})
-            await append_turn(session_id, req.message, reply)
+            await append_turn(session_id, req.message, reply, owner=owner)
             usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
             usage.stage("answer", text=reply, chars=len(reply))
             usage.set_answer(reply)
@@ -123,6 +139,9 @@ async def graph_stream(req: GraphRequest):
                 {
                     "user_input": req.message,
                     "messages": to_lc_messages(history) + [HumanMessage(content=req.message)],
+                    # 真实用户 ID 随状态一起进图：订单节点跑在子线程里，
+                    # 靠 ContextVar 传递身份，这里再显式钉一遍（每一步都带着它）
+                    "authenticated_user_id": owner,
                     # 判定为"咨询"→ 直接去知识库；"问进度"→ 直接去订单工具。
                     # 预置意图能让意图识别节点跳过那一次多余的模型调用（也更准）。
                     **({"intents": plan["preset_intents"]} if plan.get("preset_intents") else {}),
@@ -180,7 +199,7 @@ async def graph_stream(req: GraphRequest):
             # updates 没拿到答案（例如只走了闲聊）时，用流式拼出来的兜底
             final_answer = final_answer or streamed_answer
             if final_answer:
-                await append_turn(session_id, req.message, final_answer)
+                await append_turn(session_id, req.message, final_answer, owner=owner)
                 usage.stage("session", session_id=session_id, action="写入会话缓存并续期")
             usage.stage("answer", text=final_answer, chars=len(final_answer))
             usage.set_answer(final_answer)

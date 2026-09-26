@@ -1,10 +1,11 @@
 // client/src/composables/useAgent.js
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢聊天记录
 import { ref, nextTick, watch } from 'vue';
-import { useUser } from './useUser.js';
-import { API_BASE } from '../api.js';
+import { useUser, ensureIdentity, onIdentityChange, recoverIdentity } from './useUser.js';
+import { API_BASE, authHeaders } from '../api.js';
 
-// 访客身份：随请求带给后端，管理员后台按用户区分聊天记录
+// 身份：服务端登录令牌（Authorization 头）。后端用它认定"你是谁"，
+// 请求体里的 user_id 只用于后台展示 —— 订单归属校验走的是令牌里的用户 ID。
 const { identity } = useUser();
 
 // 会话 ID：后端用它做 Redis 会话缓存（key = session:{session_id}，TTL 30 分钟）
@@ -33,9 +34,23 @@ watch(messages, (val) => {
   } catch {}
 }, { deep: true });
 
+// 换身份：上一个用户的查询结果（订单号、金额）不能留在新用户的页面上
+function resetForNewIdentity() {
+  messages.value = [];
+  steps.value = [];
+  error.value = '';
+  sessionId.value = '';
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(MESSAGES_KEY);
+  } catch {}
+}
+onIdentityChange(resetForNewIdentity);
+
 export function useAgent() {
   const sendMessage = async (userInput, scrollCallback) => {
     if (!userInput.trim() || loading.value) return;
+    await ensureIdentity(); // 令牌就绪再发（订单页没有身份后端直接拒）
 
     error.value = '';
     steps.value = [];
@@ -56,7 +71,7 @@ export function useAgent() {
 
       const response = await fetch(`${API_BASE}/agent/stream`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body:    JSON.stringify({
           message: userInput,
           history,
@@ -131,6 +146,8 @@ export function useAgent() {
             }
 
             if (parsed.type === 'error') {
+              // 服务端说"没认到你"（令牌失效）：重新登录一次，用户再点一次就能过
+              if (parsed.code === 'UNAUTHENTICATED') recoverIdentity();
               messages.value[assistantIndex] = {
                 role:    'assistant',
                 content: parsed.content,
@@ -152,7 +169,10 @@ export function useAgent() {
     steps.value    = [];
     error.value    = '';
     if (sessionId.value) {
-      fetch(`${API_BASE}/observability/session/${sessionId.value}`, { method: 'DELETE' }).catch(() => {});
+      fetch(`${API_BASE}/observability/session/${sessionId.value}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      }).catch(() => {});
     }
     sessionId.value = '';
     localStorage.removeItem(SESSION_KEY);

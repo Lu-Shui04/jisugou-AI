@@ -1,10 +1,10 @@
 // client/src/composables/useRag.js
 // 状态放在模块作用域 + localStorage：切页面 / 刷新都不丢问答记录
 import { ref, nextTick, watch } from 'vue';
-import { useUser } from './useUser.js';
-import { API_BASE } from '../api.js';
+import { useUser, ensureIdentity, onIdentityChange } from './useUser.js';
+import { API_BASE, authHeaders } from '../api.js';
 
-// 访客身份：随请求带给后端，管理员后台按用户区分聊天记录
+// 身份：服务端登录令牌（知识库是公共数据，但身份同样由服务端认定）
 const { identity } = useUser();
 
 const MESSAGES_KEY = 'jisu:messages:rag';
@@ -30,9 +30,20 @@ watch(messages, (val) => {
   } catch {}
 }, { deep: true });
 
+// 换身份：知识库问答记录也按用户清掉（后台按用户看聊天记录，别串到一起）
+function resetForNewIdentity() {
+  messages.value = [];
+  error.value = '';
+  try {
+    localStorage.removeItem(MESSAGES_KEY);
+  } catch {}
+}
+onIdentityChange(resetForNewIdentity);
+
 export function useRag() {
   const ask = async (question, scrollCallback) => {
     if (!question.trim() || loading.value) return;
+    await ensureIdentity(); // 令牌就绪再发
 
     error.value = '';
     messages.value.push({ role: 'user', content: question });
@@ -46,7 +57,7 @@ export function useRag() {
     try {
       const response = await fetch(`${API_BASE}/rag/query`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body:    JSON.stringify({ question, ...identity() }),
       });
 

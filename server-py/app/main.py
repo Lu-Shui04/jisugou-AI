@@ -14,7 +14,8 @@ logging.basicConfig(
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import admin, agent, chat, graph, observability, rag
+from app.routers import admin, agent, chat, graph, identity as identity_router, observability, rag
+from app.security.middleware import IdentityMiddleware
 
 app = FastAPI(title="极速购 AI 客服系统")
 
@@ -24,7 +25,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 身份中间件放在最外层：请求一进来就把令牌换成"我是谁"，
+# 后面所有工具 / 节点 / 会话缓存都从上下文里取（请求体里的 user_id 不参与鉴权）
+app.add_middleware(IdentityMiddleware)
 
+# 身份：登录（选择用户）/ 当前身份 / 权限事件
+app.include_router(identity_router.router, prefix="/api/identity")
 app.include_router(chat.router, prefix="/api/chat")
 app.include_router(agent.router, prefix="/api/agent")
 app.include_router(rag.router, prefix="/api/rag")
@@ -46,6 +52,10 @@ async def root():
             "graph": "POST /api/graph/stream",
             "usage": "GET /api/observability/usage",
             "session": "GET /api/observability/session/{session_id}",
+            "identity_users": "GET /api/identity/users",
+            "identity_login": "POST /api/identity/login",
+            "identity_me": "GET /api/identity/me",
+            "identity_incidents": "GET /api/identity/incidents",
             "admin_login": "POST /api/admin/login",
             "admin_overview": "GET /api/admin/overview",
             "admin_conversations": "GET /api/admin/conversations",
