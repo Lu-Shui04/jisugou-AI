@@ -184,6 +184,8 @@ def _record_detail(config, question, top_k, threshold, candidates, kept,
         filtered=not kept,
         degraded=degraded,
         error=error,
+        # 重排策略按实际生效的来写（开启时是硅基流动 bge-reranker-v2-m3，关闭时是阈值过滤）
+        rerank=rerank_module.describe(),
         rerank_stats=rerank_stats or {},
         candidates=[
             {

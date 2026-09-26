@@ -164,7 +164,7 @@ class TokenUsageCallback(BaseCallbackHandler):
         """记录一次「知识库检索 + 重排」的完整明细
 
         candidates: [{"source": str, "score": float, "content": str, "kept": bool}]
-        rerank:     重排策略说明（本项目为相似度阈值过滤）
+        rerank:     重排策略说明（默认阈值过滤；开启重排后是硅基流动 bge-reranker-v2-m3）
         """
         if len(self.retrievals) >= 5:  # 单轮最多留 5 次检索（多节点工作流可能检索多次）
             return
@@ -176,7 +176,7 @@ class TokenUsageCallback(BaseCallbackHandler):
                 "top_k": int(top_k or 0),
                 "threshold": float(threshold or 0.0),
                 "rerank": rerank or "阈值过滤 + 关键词召回 + RRF 融合",
-                # 重排（智谱 rerank 或本地策略）的统计与"重排前后名次"
+                # 重排（硅基流动 bge-reranker-v2-m3，或关闭时的本地策略）的统计与"重排前后名次"
                 "rerank_stats": rerank_stats or {},
                 "kept": int(kept or 0),
                 "filtered": bool(filtered),
