@@ -56,6 +56,28 @@ class TestGrounding(unittest.TestCase):
     def test_ungrounded_helper_case_insensitive(self):
         self.assertEqual(ungrounded_order_ids("ord-999", "ORD-001"), ["ORD-999"])
 
+    def test_format_example_is_not_fabrication(self):
+        """线上实测：用户发一句看不懂的话，模型热心列举"订单号格式如 ORD-001"，
+        整段回答被判成编造、换成"没能核实到"，用户一脸懵"""
+        answer = (
+            "亲，您好呀～您方便再说一下想咨询什么吗？比如：\n"
+            "- 查询订单状态、订单内容（需要提供订单号，格式如 ORD-001）\n"
+            "- 查询您名下的订单列表（需要提供用户 ID，格式如 U-100）"
+        )
+        ok, _ = check_answer(answer, "无")
+        self.assertTrue(ok, "格式示例不该被当成编造订单")
+
+    def test_fabricated_data_after_example_cue_still_blocked(self):
+        """挂着数据的"订单号"仍然是编造，照拦不误"""
+        ok, detail = check_answer("例如 ORD-003 已发货，金额 299 元，智能手环 B5", "无")
+        self.assertFalse(ok)
+        self.assertEqual(detail["offending"], ["ORD-003"])
+
+    def test_plain_fabricated_id_without_data_still_blocked(self):
+        ok, detail = check_answer("亲，您还有一笔 ORD-777 哦～", "无")
+        self.assertFalse(ok)
+        self.assertEqual(detail["offending"], ["ORD-777"])
+
 
 class TestHistoryFacts(unittest.TestCase):
     """线上误杀事故的回归：会话历史里**已经核实过**的回答也要算事实来源

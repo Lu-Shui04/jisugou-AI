@@ -22,7 +22,10 @@ CACHE_TTL_SECONDS = int(os.getenv("SECURITY_CACHE_TTL", "86400"))       # 同样
 EVENT_TTL_SECONDS = int(os.getenv("SECURITY_EVENT_TTL", str(7 * 24 * 3600)))
 MAX_EVENTS = int(os.getenv("SECURITY_MAX_EVENTS", "200"))               # 后台展示的最近事件数
 
-CACHE_KEY = "sec:cache:{digest}"
+# 缓存 key 带版本号：判定逻辑一改（短回话要连上文一起判）就得换版本，
+# 否则旧逻辑在"孤立一句话"上下文里判出来的攻击结论会继续生效 ——
+# 线上"两个都要"被卡住就是这么来的：判错一次，缓存 24h，用户再怎么补都没用。
+CACHE_KEY = "sec:cache:v2:{digest}"
 EVENT_KEY = "sec:events"
 STATS_KEY = "sec:stats"
 

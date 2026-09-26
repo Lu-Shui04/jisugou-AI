@@ -80,12 +80,38 @@ def history_facts(history) -> str:
     return "\n".join(chunks)
 
 
+# 「格式示例」不是订单数据：模型热心告诉用户"订单号格式如 ORD-001"时，
+# 整段回答被判成编造、换成"没能核实到"，用户一脸懵（线上实测，用户发一句看不懂的话就会遇到）。
+# 只在两个条件同时成立时才放过：
+#   1. 订单号紧跟在"格式 / 例如 / 比如"这类示例提示词后面；
+#   2. 订单号后面没有跟着数据（金额、状态、商品…）—— 跟着数据的仍然是编造，照拦。
+_EXAMPLE_CUE_RE = re.compile(r"(格式|例如|比如|示例|举例|像是|如)[^。！？；\n]{0,3}$")
+_DATA_AFTER_RE = re.compile(
+    r"^[^。！？；\n]{0,12}?(元|¥|金额|状态|已发货|已完成|待发货|已取消|退款中|已签收|签收|商品|件)"
+)
+
+
+def _is_format_example(answer: str, match: "re.Match") -> bool:
+    """这个订单号只是"格式示例"，不是当成订单数据在用"""
+    if not _EXAMPLE_CUE_RE.search(answer[: match.start()]):
+        return False
+    return not _DATA_AFTER_RE.match(answer[match.end():])
+
+
 def ungrounded_order_ids(answer: str, facts: str) -> list[str]:
-    """回答里出现了、但事实里没有的订单号"""
+    """回答里出现了、但事实里没有的订单号（去掉"格式示例"这种非数据用法）"""
     if not answer:
         return []
     known = {oid.upper() for oid in ORDER_ID_RE.findall(facts or "")}
-    return sorted({oid.upper() for oid in ORDER_ID_RE.findall(answer) if oid.upper() not in known})
+    offending: list[str] = []
+    for match in ORDER_ID_RE.finditer(answer):
+        order_id = match.group(0).upper()
+        if order_id in known or order_id in offending:
+            continue
+        if _is_format_example(answer, match):
+            continue
+        offending.append(order_id)
+    return sorted(offending)
 
 
 def check_answer(answer: str, facts: str, *, require_facts_for_ids: bool = True) -> tuple[bool, dict]:

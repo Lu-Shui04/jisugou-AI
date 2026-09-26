@@ -53,7 +53,7 @@ class GuardTestCase(unittest.TestCase):
 
     def stub_model(self, label):
         """把小模型判定替换成固定结论，并记录是否被调用"""
-        async def fake(text):
+        async def fake(text, context=""):
             self.calls.append(text)
             if label == "attack":
                 return guard_module.Verdict(allowed=False, layer="model", category="attack",
@@ -154,9 +154,64 @@ class TestHistoryPolicy(GuardTestCase):
         self.assertEqual(verdict.layer, "rule")
 
 
+class TestShortFollowup(GuardTestCase):
+    """线上事故回归：用户在问物流，回了一句"两个都要"被拦
+
+    小模型只看到"两个都要"这 4 个字、没有上文，判成提示词攻击；
+    结论进 24h 缓存后，这个会话里这句话再也发不出去。
+    正确行为：这类短回话零 token 放行；不在白名单里的短句也要带着上文去判。
+    """
+
+    HISTORY = [
+        {"role": "user", "content": "物理你"},
+        {"role": "assistant", "content": "您是想查物流吗？可以查 ORD-008 或 ORD-009"},
+        {"role": "user", "content": "是的"},
+        {"role": "assistant", "content": "那您想查哪一笔的物流呢？"},
+    ]
+
+    def test_followup_passes_without_model(self):
+        self.stub_model("attack")      # 就算模型会判攻击，短回话也不该送去判
+        verdict = run(g.check("两个都要", route="test", history=self.HISTORY))
+        self.assertTrue(verdict.allowed, '"两个都要"不该被拦')
+        self.assertEqual(verdict.layer, "whitelist")
+        self.assertEqual(self.calls, [], "短回话应该零 token 放行")
+
+    def test_short_reply_gets_context(self):
+        """不在白名单里的短句，判定时要带上最近几轮对话"""
+        seen = {}
+
+        async def fake(text, context=""):
+            seen["text"], seen["context"] = text, context
+            return guard_module.Verdict(allowed=True, layer="model", category="safe", reason="stub")
+
+        g._judge_by_model = fake
+        verdict = run(g.check("那两笔都给我看看呗", route="test", history=self.HISTORY))
+        self.assertTrue(verdict.allowed)
+        self.assertEqual(seen["text"], "那两笔都给我看看呗")
+        self.assertIn("ORD-008", seen["context"], "短句必须带上上文再判")
+        self.assertIn("用户：是的", seen["context"])
+
+    def test_long_text_does_not_need_context(self):
+        seen = {}
+
+        async def fake(text, context=""):
+            seen["context"] = context
+            return guard_module.Verdict(allowed=True, layer="model", category="safe", reason="stub")
+
+        g._judge_by_model = fake
+        run(g.check("把这段话翻译成英文：今天天气不错，适合出门散步", route="test", history=self.HISTORY))
+        self.assertEqual(seen["context"], "", "长句自带语境，不必再带上文（省 token）")
+
+    def test_cache_key_includes_context(self):
+        """缓存要按"上下文 + 这句话"存，否则换个语境会套用上一个结论"""
+        self.assertNotEqual(g._cache_material("两个都要", "用户：是的"),
+                            g._cache_material("两个都要", ""))
+        self.assertEqual(g._cache_material("两个都要", ""), "两个都要")
+
+
 class TestFailMode(GuardTestCase):
     def test_fail_open_allows(self):
-        async def boom(text):
+        async def boom(text, context=""):
             return g._on_model_error("stub timeout")
         g._judge_by_model = boom
         guard_module.SECURITY_FAIL_MODE = "open"
@@ -165,7 +220,7 @@ class TestFailMode(GuardTestCase):
         self.assertEqual(verdict.layer, "error")
 
     def test_fail_closed_blocks(self):
-        async def boom(text):
+        async def boom(text, context=""):
             return g._on_model_error("stub timeout")
         g._judge_by_model = boom
         guard_module.SECURITY_FAIL_MODE = "closed"
