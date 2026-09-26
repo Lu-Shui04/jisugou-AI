@@ -103,7 +103,7 @@ def order_agent_node(state, config: RunnableConfig = None):
 
             # 兜底：一个字都没调工具，却给了答案 → 很可能是编的，改用确定性查询的事实
             if not steps:
-                fallback = deterministic_lookup(user_input, principal)
+                fallback = deterministic_lookup(user_input, principal, history=state.get("messages"))
                 if fallback:
                     print(f"[orderAgentNode] 模型未调用工具，已改用确定性查询："
                           f"{[s['tool'] for s in fallback['steps']]}")

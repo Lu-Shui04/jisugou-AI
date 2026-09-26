@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from app.data.mock import logistics
 from app.security import access, identity
 from app.tools.resilience import resilient_tool
-from app.utils.ids import normalize_id, order_ids, tracking_nos, user_ids
+from app.utils.ids import normalize_id, order_ids, resolve_order_ids, tracking_nos, user_ids
 
 
 class OrderIdInput(BaseModel):
@@ -180,12 +180,25 @@ all_tools = [get_order_info_tool, get_logistics_tool, get_user_orders_tool]
 # 所以只要用户输入里出现 ID，就允许调用方绕开模型自己查一遍。
 # 注意：确定性查询同样走上面那三个工具，因此**同样受权限约束** ——
 # 用户报别人的订单号，这里查出来的也是"无权查看"，不会因为"绕开模型"就漏数据。
-def deterministic_lookup(text: str, principal: identity.Principal | None = None) -> dict | None:
+def deterministic_lookup(text: str, principal: identity.Principal | None = None,
+                        history=None) -> dict | None:
     """把文本里的 ID 抠出来直接查工具，返回 {"steps": [...], "answer": "<工具原始事实>"}
 
     没有 ID 时返回 None（那就没法确定性查询，只能引导用户提供 ID）。
+
+    除了写全的 ORD-xxx / U-xxx / 快递单号，还认**省略写法与指代**：
+    用户看完订单一览后追问「004为什么没有下单时间」「第二笔到哪了」「这单发货了吗」，
+    这些抠不出 ID，模型只能凭上文记忆作答（然后被出口接地校验拦成"没能核实到"）。
+    这里借助 history 把号补全 —— 补不出唯一结果就返回 None，不猜。
     """
     order_id_list = order_ids(text)
+    if not order_id_list:
+        # 兜底候选集：上文出现过的订单号 + 本人名下的订单号（后者让"新会话直接问 004"也能补全）
+        own_orders = []
+        current = principal or identity.current_principal()
+        if not current.anonymous:
+            own_orders = [item["orderId"] for item in access.orders_of(current.user_id)]
+        order_id_list = resolve_order_ids(text, history, valid=own_orders)
     user_id_list = user_ids(text)
     tracking_list = tracking_nos(text)
     if not (order_id_list or user_id_list or tracking_list):

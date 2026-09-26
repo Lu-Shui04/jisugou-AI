@@ -116,5 +116,66 @@ class TestDeterministicLookup(unittest.TestCase):
         self.assertIn("未登录", result["answer"])
 
 
+
+class TestShorthandOrderIds(unittest.TestCase):
+    """省略写法 / 指代也要能落到具体订单上
+
+    线上实测：用户看完订单一览后追问「004为什么没有下单时间」。
+    "004" 抠不出 ORD 号 → 模型凭上文记忆作答 → 出口接地校验判 ORD-004 不在事实里 →
+    整段被换成"这笔数据没能核实到"（而工具其实查得到，四笔订单每笔都带 createTime）。
+    """
+
+    HISTORY = [
+        {"role": "user", "content": "查一下我的订单"},
+        {"role": "assistant", "content": "您有两笔已发货订单：ORD-001 蓝牙耳机、ORD-010 机械键盘。"},
+    ]
+
+    def test_bare_digits_resolved_from_history(self):
+        with identity.acting_as("U-100"):
+            result = deterministic_lookup("004为什么没有下单时间", history=self.HISTORY)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["steps"][0]["tool"], "getOrderInfo")
+        self.assertEqual(result["steps"][0]["input"]["orderId"], "ORD-004")
+        self.assertIn("2025-03-15", result["answer"])   # createTime 真的带回来了
+
+    def test_nth_order_reference(self):
+        with identity.acting_as("U-100"):
+            result = deterministic_lookup("第二笔到哪了", history=self.HISTORY)
+        self.assertEqual(result["steps"][0]["input"]["orderId"], "ORD-010")
+
+    def test_anaphora_with_order_topic(self):
+        with identity.acting_as("U-100"):
+            result = deterministic_lookup("这单发货了吗", history=self.HISTORY)
+        self.assertEqual(result["steps"][0]["input"]["orderId"], "ORD-010")
+
+    def test_own_orders_used_when_history_is_empty(self):
+        """新会话直接问 "004"：用本人名下的订单号补全（只认自己的，不猜别人的）"""
+        with identity.acting_as("U-100"):
+            result = deterministic_lookup("004 到哪了")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["steps"][0]["input"]["orderId"], "ORD-004")
+
+    def test_foreign_shorthand_does_not_resolve(self):
+        """U-102 名下没有 ORD-001 附近的号：补不出来就返回 None，不拿别人的号去试"""
+        with identity.acting_as("U-102"):
+            self.assertIsNone(deterministic_lookup("001为什么没有下单时间"))
+
+    def test_amounts_are_not_treated_as_order_numbers(self):
+        """金额/数量这类数字不能被当成订单号后缀（138.9 元不是 ORD-138）"""
+        with identity.acting_as("U-100"):
+            self.assertIsNone(deterministic_lookup("为什么扣了我 138 元", history=self.HISTORY))
+
+    def test_ambiguous_shorthand_is_not_guessed(self):
+        """一句话里提到两个省略号："001 和 011 哪个先到" —— 猜哪个都不对，返回 None"""
+        history = [{"role": "assistant", "content": "ORD-001 已发货；ORD-011 待发货"}]
+        with identity.acting_as("U-100"):
+            self.assertIsNone(deterministic_lookup("001 和 011 哪个先到", history=history))
+
+    def test_full_id_still_wins(self):
+        with identity.acting_as("U-100"):
+            result = deterministic_lookup("ORD-004 详情", history=self.HISTORY)
+        self.assertEqual(result["steps"][0]["input"]["orderId"], "ORD-004")
+
+
 if __name__ == "__main__":
     unittest.main()

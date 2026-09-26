@@ -262,7 +262,7 @@ async def agent_stream(req: AgentRequest):
             # 出口接地校验判定"编造"、整段被换成"没能核实到" —— 数据其实一直查得到。
             # 所以这里替它做确定性查询，步骤推给前端，再让模型基于真实事实重说一遍。
             if not steps:
-                preflight = deterministic_lookup(req.message, principal)
+                preflight = deterministic_lookup(req.message, principal, history=history)
                 if preflight:
                     for step in preflight["steps"]:
                         record = {"tool": step["tool"], "toolInput": step["input"],
