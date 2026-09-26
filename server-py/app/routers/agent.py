@@ -149,18 +149,6 @@ async def agent_stream(req: AgentRequest):
 
         yield _send("session", {"session_id": session_id, "ttl": SESSION_TTL_SECONDS})
 
-        # 订单页是"有数据权限"的入口：不知道你是谁就不办事（fail closed，零 token）
-        if principal.anonymous:
-            message = principal.denial_message()
-            usage.stage("identity_required", **principal.as_dict())
-            usage.set_answer(message)
-            usage.set_error("unauthenticated/%s" % principal.reason)
-            yield _send("error", {"content": message, "error": message,
-                                  "blocked": True, "code": "UNAUTHENTICATED"})
-            yield _send("usage", {"usage": await usage.finish(status="blocked")})
-            yield _send("done", {"done": True})
-            return
-
         # 提示词安全检查（白名单 → 规则 → 小模型）
         verdict = await guard.check(
             req.message, user_id=usage.user_id, user_name=usage.user_name,
@@ -232,6 +220,20 @@ async def agent_stream(req: AgentRequest):
                 print(f"[Agent KB Error] {error}")
                 yield _send("error", {"content": "查询出错，请重试"})
             yield _send("usage", {"usage": await usage.finish(status=status)})
+            yield _send("done", {"done": True})
+            return
+
+        # 订单页是"有数据权限"的入口：不知道你是谁就不去查（fail closed，零 token）。
+        # 注意位置：退款转人工、注入拦截这些**不碰数据**的分支在前面已经处理完，
+        # 匿名用户照样能得到正确话术；只有真要取订单数据时才要求身份。
+        if principal.anonymous:
+            message = principal.denial_message()
+            usage.stage("identity_required", **principal.as_dict())
+            usage.set_answer(message)
+            usage.set_error("unauthenticated/%s" % principal.reason)
+            yield _send("error", {"content": message, "error": message,
+                                  "blocked": True, "code": "UNAUTHENTICATED"})
+            yield _send("usage", {"usage": await usage.finish(status="blocked")})
             yield _send("done", {"done": True})
             return
 

@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import time
 import uuid
 from collections import deque
@@ -38,6 +39,12 @@ TOKEN_PREFIX = "jisu1"
 # 令牌有效期：12 小时（前端拿到 401 会自动用原身份重新登录，用户无感）
 TOKEN_TTL_SECONDS = int(os.getenv("IDENTITY_TTL_SECONDS", "43200"))
 MAX_INCIDENTS = 200
+# 权限事件落盘路径：容器是 uvicorn --workers 2，内存里的 list 每个进程各一份，
+# 越权记录会"这次查得到、下次查不到"。落成一个共享文件，多进程/重启都不丢。
+INCIDENT_LOG_PATH = os.getenv("IDENTITY_INCIDENT_LOG") or os.path.join(
+    tempfile.gettempdir(), "jisu_identity_incidents.jsonl")
+INCIDENT_LOG_MAX_BYTES = 512 * 1024
+INCIDENT_LOG_KEEP_LINES = 1000
 
 LOGIN_REQUIRED_MESSAGE = (
     "亲，订单数据只能由本人查看，麻烦先在页面左上角选择用户身份（U-100 ~ U-104），"
@@ -126,11 +133,53 @@ ANONYMOUS = Principal()
 _INCIDENTS: deque = deque(maxlen=MAX_INCIDENTS)
 
 
+def _trim_incident_log(path: str) -> None:
+    """文件太大就只留最后若干行（权限事件不是账本，不需要无限增长）"""
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        lines = handle.readlines()[-INCIDENT_LOG_KEEP_LINES:]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.writelines(lines)
+
+
+def _append_incident_line(event: dict) -> None:
+    """追加一行到共享事件文件（失败只记 debug 日志，绝不影响主流程）"""
+    try:
+        path = INCIDENT_LOG_PATH
+        try:
+            if os.path.getsize(path) > INCIDENT_LOG_MAX_BYTES:
+                _trim_incident_log(path)
+        except OSError:
+            pass
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception as err:  # 磁盘满 / 只读文件系统…
+        logger.debug("权限事件落盘失败: %s", err)
+
+
+def _read_incident_log(limit: int) -> list[dict]:
+    try:
+        with open(INCIDENT_LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+    events: list[dict] = []
+    for line in lines[-max(1, limit):]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    return list(reversed(events))  # 新的在前
+
+
 def record_incident(kind: str, **detail) -> dict:
-    """记一条权限事件。越权不是普通报错，必须能被审计到。"""
+    """记一条权限事件。越权不是普通报错，必须能被审计到（并且多进程都看得到）。"""
     event = {"ts": int(time.time() * 1000), "kind": kind,
              **{key: value for key, value in detail.items() if value not in (None, "")}}
     _INCIDENTS.append(event)
+    _append_incident_line(event)
     logger.warning("权限事件 %s %s", kind, json.dumps(event, ensure_ascii=False))
     return event
 
@@ -150,14 +199,20 @@ def audit_claim(principal: "Principal", claimed: str, route: str = "") -> bool:
 
 
 def recent_incidents(limit: int = 50) -> list[dict]:
-    """最近的权限事件（新的在前），供前端 / 后台查看"""
-    items = list(_INCIDENTS)[-max(1, int(limit)):]
-    return list(reversed(items))
+    """最近的权限事件（新的在前），供前端 / 后台查看
+
+    以共享文件为准（多 worker 写的都在里面）；文件读不到才退回本进程内存。
+    """
+    size = max(1, int(limit))
+    events = _read_incident_log(size)
+    if events:
+        return events
+    return list(reversed(list(_INCIDENTS)[-size:]))
 
 
 def incident_counts() -> dict:
     counts: dict[str, int] = {}
-    for event in _INCIDENTS:
+    for event in recent_incidents(limit=INCIDENT_LOG_KEEP_LINES):
         counts[event["kind"]] = counts.get(event["kind"], 0) + 1
     return counts
 

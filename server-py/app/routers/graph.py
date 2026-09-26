@@ -79,18 +79,6 @@ async def graph_stream(req: GraphRequest):
 
         yield _send("session", {"session_id": session_id, "ttl": SESSION_TTL_SECONDS})
 
-        # 智能中枢里有订单节点，同样属于"有数据权限"的入口：不知道你是谁就不进图
-        if principal.anonymous:
-            message = principal.denial_message()
-            usage.stage("identity_required", **principal.as_dict())
-            usage.set_answer(message)
-            usage.set_error("unauthenticated/%s" % principal.reason)
-            yield _send("error", {"content": message, "error": message,
-                                  "blocked": True, "code": "UNAUTHENTICATED"})
-            yield _send("usage", {"usage": await usage.finish(status="blocked")})
-            yield _send("done", {"done": True})
-            return
-
         # 提示词安全检查：命中就不进图，省掉整条链路的 token
         verdict = await guard.check(
             req.message, user_id=usage.user_id, user_name=usage.user_name,
@@ -125,6 +113,19 @@ async def graph_stream(req: GraphRequest):
             usage.set_answer(reply)
             usage.set_steps([{"node": "handoff", "intent": judge.get("topic") or judge["kind"]}])
             yield _send("usage", {"usage": await usage.finish(status="ok")})
+            yield _send("done", {"done": True})
+            return
+
+        # 智能中枢里有订单节点，进图前同样要求身份（退款/注入分支已在前面处理完，
+        # 匿名用户照样拿得到正确话术，只有真要取订单数据时才拦）
+        if principal.anonymous:
+            message = principal.denial_message()
+            usage.stage("identity_required", **principal.as_dict())
+            usage.set_answer(message)
+            usage.set_error("unauthenticated/%s" % principal.reason)
+            yield _send("error", {"content": message, "error": message,
+                                  "blocked": True, "code": "UNAUTHENTICATED"})
+            yield _send("usage", {"usage": await usage.finish(status="blocked")})
             yield _send("done", {"done": True})
             return
 
