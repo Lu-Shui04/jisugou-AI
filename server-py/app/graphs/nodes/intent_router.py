@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.models.deepseek import create_model
 from app.prompts.intent import intent_prompt
+from app.utils.messages import history_text
 
 _chain = intent_prompt | create_model(temperature=0) | StrOutputParser()
 
@@ -32,18 +33,6 @@ def _parse_intents(raw: str) -> list[str]:
     if len(intents) > 1 and "general" in intents:
         intents.remove("general")
     return intents or ["general"]
-
-
-def _history_text(state, limit: int = 6) -> str:
-    """把最近几轮对话拼成上下文，解决"只回一个用户 ID"被误判成闲聊的问题"""
-    messages = state.get("messages") or []
-    lines = []
-    for message in messages[-limit:]:
-        role = "用户" if getattr(message, "type", "") == "human" else "客服"
-        content = (getattr(message, "content", "") or "").strip().replace("\n", " ")
-        if content:
-            lines.append(f"{role}：{content[:150]}")
-    return "\n".join(lines) or "（无，这是第一句话）"
 
 
 # 带这些指代的短问句属于"追问"，按上文主题归位
@@ -73,7 +62,8 @@ def intent_router_node(state, config: RunnableConfig = None):
         print(f'[intentRouter] "{user_input}" 使用预置意图 {",".join(clean)}（跳过模型判定）')
         return {"intent": clean[0], "intents": clean}
 
-    history = _history_text(state)
+    # 拼最近几轮对话当上下文，解决"只回一个用户 ID"被误判成闲聊的问题
+    history = history_text(state, empty="（无，这是第一句话）")
 
     # 传 config 让 Token 统计的 callbacks 能透传到模型调用
     raw = _chain.invoke({"user_input": user_input, "history": history}, config=config)

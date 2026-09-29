@@ -33,12 +33,3 @@ customer_service_prompt = ChatPromptTemplate.from_messages(
         ("human", "{user_input}"),
     ]
 )
-
-# 通用对话 Prompt（无业务约束，用于演示）
-general_chat_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", "你是一个有帮助的 AI 助手，用中文回答问题。"),
-        ("placeholder", "{chat_history}"),
-        ("human", "{user_input}"),
-    ]
-)

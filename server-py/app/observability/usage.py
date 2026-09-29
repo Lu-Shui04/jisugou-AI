@@ -395,7 +395,7 @@ async def _accumulate(record: dict) -> None:
             _memory_incr(key, record)
 
 
-def _to_ints(raw: dict) -> dict:
+def to_int_counters(raw: dict) -> dict:
     out: dict = {}
     for key, value in (raw or {}).items():
         try:
@@ -405,9 +405,9 @@ def _to_ints(raw: dict) -> dict:
     return out
 
 
-def _derive(raw: dict) -> dict:
+def derive_metrics(raw: dict) -> dict:
     """把累计计数补上平均值 / 错误率等派生指标"""
-    data = _to_ints(raw or {})
+    data = to_int_counters(raw or {})
     data.setdefault("requests", 0)
     data.setdefault("prompt_tokens", 0)
     data.setdefault("completion_tokens", 0)
@@ -431,7 +431,7 @@ async def _hgetall(prefix: str, client=None) -> dict[str, dict]:
         client = client or redis_client.get_redis()
         for key in await client.keys(f"{prefix}:*"):
             # 去掉 "usage:route:" 这类前缀，只留业务标识（如 chat / deepseek-chat）
-            result[key[len(prefix) + 1:]] = _to_ints(await client.hgetall(key))
+            result[key[len(prefix) + 1:]] = to_int_counters(await client.hgetall(key))
         return result
     except Exception as err:
         logger.warning("读取用量统计失败，回退内存: %s", err)
@@ -494,20 +494,20 @@ async def get_usage_stats(day: Optional[str] = None) -> dict:
     result: dict = {"date": day, "total": {}, "today": {}, "routes": {}, "models": {}, "users": {}}
     try:
         client = redis_client.get_redis()
-        result["total"] = _derive(await client.hgetall("usage:total"))
-        result["today"] = _derive(await client.hgetall(f"usage:{day}"))
-        result["routes"] = {k: _derive(v) for k, v in (await _hgetall("usage:route", client)).items()}
-        result["models"] = {k: _derive(v) for k, v in (await _hgetall("usage:model", client)).items()}
-        result["users"] = {k: _derive(v) for k, v in (await _hgetall("usage:user", client)).items()}
+        result["total"] = derive_metrics(await client.hgetall("usage:total"))
+        result["today"] = derive_metrics(await client.hgetall(f"usage:{day}"))
+        result["routes"] = {k: derive_metrics(v) for k, v in (await _hgetall("usage:route", client)).items()}
+        result["models"] = {k: derive_metrics(v) for k, v in (await _hgetall("usage:model", client)).items()}
+        result["users"] = {k: derive_metrics(v) for k, v in (await _hgetall("usage:user", client)).items()}
         result["days"] = sorted(await client.zrange("usage:days", 0, -1), reverse=True)
     except Exception as err:
         logger.warning("读取用量统计失败，回退内存: %s", err)
         result["error"] = "Redis 不可用（数据来自内存兜底）"
-        result["total"] = _derive(_memory_usage.get("usage:total", {}))
-        result["today"] = _derive(_memory_usage.get(f"usage:{day}", {}))
-        result["routes"] = {k: _derive(v) for k, v in (await _hgetall("usage:route")).items()}
-        result["models"] = {k: _derive(v) for k, v in (await _hgetall("usage:model")).items()}
-        result["users"] = {k: _derive(v) for k, v in (await _hgetall("usage:user")).items()}
+        result["total"] = derive_metrics(_memory_usage.get("usage:total", {}))
+        result["today"] = derive_metrics(_memory_usage.get(f"usage:{day}", {}))
+        result["routes"] = {k: derive_metrics(v) for k, v in (await _hgetall("usage:route")).items()}
+        result["models"] = {k: derive_metrics(v) for k, v in (await _hgetall("usage:model")).items()}
+        result["users"] = {k: derive_metrics(v) for k, v in (await _hgetall("usage:user")).items()}
         result["days"] = chatlog.memory_days()
     return result
 
@@ -519,9 +519,9 @@ async def get_usage_overview(days: int = 7) -> dict:
     today = now.strftime("%Y-%m-%d")
 
     stats = await get_usage_stats(today)
-    routes = {k: _derive(v) for k, v in stats["routes"].items()}
-    models = {k: _derive(v) for k, v in stats["models"].items()}
-    users = {k: _derive(v) for k, v in stats["users"].items()}
+    routes = {k: derive_metrics(v) for k, v in stats["routes"].items()}
+    models = {k: derive_metrics(v) for k, v in stats["models"].items()}
+    users = {k: derive_metrics(v) for k, v in stats["users"].items()}
 
     trend: list[dict] = []
     try:
@@ -534,13 +534,13 @@ async def get_usage_overview(days: int = 7) -> dict:
             values = await pipe.execute()
         for index in range(days):
             day = (now - timedelta(days=days - 1 - index)).strftime("%Y-%m-%d")
-            trend.append({"date": day, **_derive(values[index * 2] or {}),
+            trend.append({"date": day, **derive_metrics(values[index * 2] or {}),
                           "active_users": int(values[index * 2 + 1] or 0)})
     except Exception as err:
         logger.warning("读取趋势失败，回退内存: %s", err)
         for offset in range(days - 1, -1, -1):
             day = (now - timedelta(days=offset)).strftime("%Y-%m-%d")
-            trend.append({"date": day, **_derive(_memory_usage.get(f"usage:{day}", {})), "active_users": 0})
+            trend.append({"date": day, **derive_metrics(_memory_usage.get(f"usage:{day}", {})), "active_users": 0})
 
     # 今日活跃用户 = 今日有调用记录的用户数（trend 最后一天即今天）
     if trend:

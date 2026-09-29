@@ -14,9 +14,10 @@
 """
 from __future__ import annotations
 
-from app.data.mock import logistics, orders
+from app.data.mock import orders
 from app.security import identity
 from app.utils.ids import normalize_id, referenced_ids
+from app.utils.messages import message_content
 
 
 # ── 基础判断 ─────────────────────────────────────────────────────
@@ -31,10 +32,6 @@ def find_order_by_tracking(tracking_no: str) -> dict | None:
         if normalize_id(order.get("trackingNo") or "") == target:
             return order
     return None
-
-
-def has_logistics(tracking_no: str) -> bool:
-    return normalize_id(tracking_no) in logistics
 
 
 def orders_of(user_id: str) -> list[dict]:
@@ -99,12 +96,6 @@ def deny_foreign_tracking(principal: identity.Principal, tracking_no: str) -> di
 
 
 # ── 会话历史裁剪：别人订单号不能顺着 history 溜进上下文 ─────────────
-def _message_content(message) -> str:
-    if isinstance(message, dict):
-        return str(message.get("content") or "")
-    return str(getattr(message, "content", "") or "")
-
-
 def _message_role(message) -> str:
     if isinstance(message, dict):
         return str(message.get("role") or "")
@@ -140,7 +131,7 @@ def scope_history(history, principal: identity.Principal) -> tuple[list, list[di
         # 匿名（没选身份 / 令牌过期）：谁都无权，带 ID 的历史一概不留
         kept, dropped = [], []
         for message in history:
-            content = _message_content(message)
+            content = message_content(message)
             hits = foreign_ids(content, identity.ANONYMOUS)
             if any(hits.values()) or referenced_ids(content)["orders"]:
                 dropped.append({"role": _message_role(message), "hits": hits})
@@ -153,7 +144,7 @@ def scope_history(history, principal: identity.Principal) -> tuple[list, list[di
 
     kept, dropped = [], []
     for message in history:
-        hits = foreign_ids(_message_content(message), principal)
+        hits = foreign_ids(message_content(message), principal)
         if any(hits.values()):
             dropped.append({"role": _message_role(message), "hits": hits})
             continue

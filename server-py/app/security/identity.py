@@ -92,11 +92,6 @@ def get_user(user_id: str) -> Optional[DemoUser]:
     return _USERS.get((user_id or "").strip().upper().replace(" ", ""))
 
 
-def display_name(user_id: str) -> str:
-    user = get_user(user_id)
-    return user.name if user else (user_id or "匿名")
-
-
 # ── 身份主体（Principal）：一次请求里"我是谁"的唯一事实来源 ──────────
 @dataclass(frozen=True)
 class Principal:
@@ -309,10 +304,6 @@ _current: ContextVar[Principal] = ContextVar("jisu_principal", default=ANONYMOUS
 def current_principal() -> Principal:
     """当前请求的真实身份。工具、节点、会话缓存都只认它，不认请求参数。"""
     return _current.get()
-
-
-def current_user_id() -> str:
-    return _current.get().user_id
 
 
 def set_principal(principal: Principal):

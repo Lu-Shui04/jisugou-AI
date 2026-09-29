@@ -63,9 +63,3 @@ def create_model(**overrides) -> ChatOpenAI:
 
     return model
 
-
-# 默认导出一个标准实例（非流式）
-model = create_model()
-
-# 流式实例，用于 SSE 接口
-streaming_model = create_model(streaming=True)

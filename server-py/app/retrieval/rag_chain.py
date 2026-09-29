@@ -8,9 +8,7 @@
 """
 import logging
 import os
-import re
 
-from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_postgres import PGVector
 
@@ -20,14 +18,7 @@ from app.models.embedding import embeddings
 from app.prompts.rag import condense_prompt, rag_prompt
 from app.resilience import CircuitOpenError
 from app.retrieval import rerank as rerank_module
-from app.retrieval.query_utils import (  # noqa: F401  (KNOWLEDGE_DIR / keyword_search 供其他模块导入)
-    KNOWLEDGE_DIR,
-    keyword_search,
-    load_sections,
-    normalize_query,
-    rrf_fuse,
-    strip_citations,
-)
+from app.retrieval.query_utils import keyword_search, normalize_query, rrf_fuse
 from app.observability.usage import record_retrieval
 from app.security import rules as security_rules
 from app.security import store as security_store
@@ -138,11 +129,6 @@ def retrieve_with_threshold(question, top_k=None, score_threshold=None):
         vector_kept = []
     keyword_hits = keyword_search(question, limit=k)
     return rrf_fuse(vector_kept, keyword_hits, limit=k)
-
-
-def retrieve_docs(question, top_k=None, score_threshold=None):
-    """只要文档，不要分数"""
-    return [doc for doc, _ in retrieve_with_threshold(question, top_k, score_threshold)]
 
 
 def _record_detail(config, question, top_k, threshold, candidates, kept,
@@ -290,43 +276,6 @@ async def stream_answer(docs, question, config=None, chat_history=None):
 
 
 class RagChain:
-    """标准 RAG 链：阈值过滤后回答，没有命中直接返回兜底话术"""
-
-    def retrieve(self, question, top_k=None, score_threshold=None):
-        return retrieve_with_threshold(question, top_k, score_threshold)
-
-    def invoke(self, input: dict, config=None) -> str:
-        question = input["question"]
-        # 多轮：先结合上文把问题改写完整（"这是什么商品" → "降噪头戴耳机 H7 是什么商品"）
-        query = condense_question(question, input.get("history") or "", config)
-        try:
-            hits, _ = _retrieve_with_detail(
-                query, input.get("top_k"), input.get("score_threshold"), config
-            )
-        except Exception as err:
-            # 向量库/embedding 不可用：降级为可读话术，不打断整条链路
-            logger.error("知识库检索失败，降级回答：%s", err)
-            return SERVICE_BUSY_ANSWER
-
-        if not hits:
-            return NO_CONTEXT_ANSWER
-
-        try:
-            return _answer_chain.invoke(
-                {
-                    "docs": [doc for doc, _ in hits],
-                    "question": question,
-                    "chat_history": input.get("chat_history"),
-                },
-                config=config,
-            )
-        except Exception as err:
-            # 模型不可用（备用模型也失败）：同样降级
-            logger.error("RAG 回答生成失败，降级回答：%s", err)
-            return SERVICE_BUSY_ANSWER
-
-
-class RagChainWithSources(RagChain):
     """带来源引用 + 相似度分数的 RAG 链"""
 
     def prepare(self, input: dict, config=None) -> dict:
@@ -395,6 +344,4 @@ class RagChainWithSources(RagChain):
                 "degraded": False, "query": prepared["query"]}
 
 
-rag_chain = RagChain()
-rag_chain_with_sources = RagChainWithSources()
-ragChainWithSources = rag_chain_with_sources  # 兼容旧命名
+rag_chain_with_sources = RagChain()

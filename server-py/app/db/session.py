@@ -12,7 +12,6 @@ Redis 没有数据（首次请求 / 已过期 / 服务不可用）时才用前�
 import uuid
 
 from app.db.redis_client import get_history
-from app.db.redis_client import SESSION_TTL_SECONDS  # noqa: F401  (供路由推送 TTL)
 from app.security import access, identity
 
 

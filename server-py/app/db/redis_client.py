@@ -22,7 +22,7 @@ import redis.asyncio as aioredis
 from redis.backoff import NoBackoff
 from redis.retry import Retry
 
-from app.resilience import CircuitOpenError, get_breaker
+from app.resilience import get_breaker
 from app.security import identity
 
 logger = logging.getLogger("jisu.redis")

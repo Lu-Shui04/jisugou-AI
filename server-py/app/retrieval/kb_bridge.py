@@ -14,7 +14,8 @@ import asyncio
 from typing import AsyncIterator, Optional
 
 from app.retrieval.query_utils import build_source_line, is_small_talk  # noqa: F401  （对外复用）
-from app.retrieval.rag_chain import rag_chain_with_sources, stream_answer, strip_citations
+from app.retrieval.query_utils import strip_citations
+from app.retrieval.rag_chain import rag_chain_with_sources, stream_answer
 
 FALLBACK = (
     "亲，这条问题知识库里暂时没查到，可以换个说法再问一次，"

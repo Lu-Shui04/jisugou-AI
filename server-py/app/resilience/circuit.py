@@ -153,7 +153,6 @@ class CircuitBreaker:
         self._window: deque = deque()          # [(ts, ok)]
         self._consecutive_failures = 0
         self._state = CLOSED
-        self._opened_at = 0.0
         self._opened_count = 0
         self._backoff_level = 0
         self._probing = False
@@ -331,7 +330,6 @@ class CircuitBreaker:
 
     def _open_locked(self, now: float, reason: str) -> None:
         self._state = OPEN
-        self._opened_at = now
         self._opened_count += 1
         self._probing = False
         self._probe_success = 0
@@ -445,13 +443,6 @@ def get_breaker(name: str) -> CircuitBreaker:
 def snapshot_all() -> list[dict]:
     with _registry_lock:
         return [breaker.snapshot() for breaker in _breakers.values()]
-
-
-def reset_all() -> int:
-    with _registry_lock:
-        for breaker in _breakers.values():
-            breaker.reset()
-        return len(_breakers)
 
 
 # 说明：状态当前存在进程内存。若将来要跨 worker / 跨实例共享，只需在这里加一层

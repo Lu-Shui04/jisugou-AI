@@ -18,7 +18,8 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.retrieval.rag_chain import KNOWLEDGE_DIR, rag_chain_with_sources, stream_answer
+from app.retrieval.query_utils import KNOWLEDGE_DIR
+from app.retrieval.rag_chain import rag_chain_with_sources, stream_answer
 from app.observability.usage import RequestUsage
 from app.security import guard, identity
 from app.security.gate import require_gate

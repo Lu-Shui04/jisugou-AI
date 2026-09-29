@@ -1,18 +1,8 @@
 from langchain_core.runnables import RunnableConfig
 
-from app.retrieval.rag_chain import rag_chain_with_sources, strip_citations
-
-
-def _history_text(state, limit: int = 6) -> str:
-    """最近几轮对话，用来把"这是什么商品"这类依赖上文的问题改写完整"""
-    messages = state.get("messages") or []
-    lines = []
-    for message in messages[-limit:]:
-        role = "用户" if getattr(message, "type", "") == "human" else "客服"
-        content = (getattr(message, "content", "") or "").strip().replace("\n", " ")
-        if content:
-            lines.append(f"{role}：{content[:150]}")
-    return "\n".join(lines)
+from app.retrieval.query_utils import strip_citations
+from app.retrieval.rag_chain import rag_chain_with_sources
+from app.utils.messages import history_text
 
 
 def rag_node(state, config: RunnableConfig = None):
@@ -29,7 +19,7 @@ def rag_node(state, config: RunnableConfig = None):
         result = rag_chain_with_sources.invoke(
             {
                 "question": user_input,
-                "history": _history_text(state),
+                "history": history_text(state),
                 "chat_history": chat_history,
             },
             config=config,

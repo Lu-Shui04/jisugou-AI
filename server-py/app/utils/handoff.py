@@ -401,11 +401,6 @@ def decide(verdict: Optional[dict], page: str) -> dict:
     return {"reply": None, "kb": False, "preset_intents": None}
 
 
-def should_short_circuit(verdict: Optional[dict]) -> bool:
-    """是否由本模块直接回复（只有"就是要办"才直接回）"""
-    return bool(verdict) and verdict.get("kind") == "action"
-
-
 def extra_hint(verdict: Optional[dict]) -> str:
     """混合意图时补一句指路，别把人家的其他问题吞了"""
     if not verdict or verdict.get("dominant", True):

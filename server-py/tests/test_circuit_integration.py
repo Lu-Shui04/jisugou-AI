@@ -72,7 +72,7 @@ class TestEmbeddingCircuit(unittest.TestCase):
     def test_03_retrieval_degrades_to_keyword(self):
         """embedding 熔断时，检索链路不抛错：跳过向量、只走关键词召回"""
         try:
-            from app.chains import rag_chain
+            from app.retrieval import rag_chain
         except Exception as err:  # 本地缺 langchain_postgres 时跳过（容器内会跑）
             self.skipTest("本地缺少向量库依赖：%s" % err)
 

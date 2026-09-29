@@ -9,6 +9,8 @@
 """
 import re
 
+from app.utils.messages import message_content
+
 # 用户不一定规规矩矩写 "U-103"：线上真有人发 "u103"、"ord006"（小写、漏掉连字符）
 ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])ORD-?(\d+)(?!\d)", re.IGNORECASE)
 USER_ID_RE = re.compile(r"(?<![A-Za-z0-9])U-?(\d+)(?!\d)", re.IGNORECASE)
@@ -46,12 +48,6 @@ def referenced_ids(text: str) -> dict:
     }
 
 
-def any_id(text: str) -> bool:
-    """文本里有没有业务 ID（没有 ID 就没法做确定性查询）"""
-    return bool(ORDER_ID_RE.search(text or "") or USER_ID_RE.search(text or "")
-                or TRACKING_RE.search(text or ""))
-
-
 # ── 省略写法与指代：用户不会每次都把订单号写全 ──────────────────────
 # 线上实测：用户看完订单一览后追问「004为什么没有下单时间」——
 # "004" 抠不出 ORD 号，模型只能凭上文记忆作答，然后被出口接地校验拦成"没能核实到"。
@@ -63,16 +59,9 @@ _ANAPHORA_RE = re.compile(r"(这单|那单|这笔|那笔|这个订单|那个订�
 _ORDER_TOPIC_RE = re.compile(r"(订单|物流|快递|发货|到哪|签收|派送|退款)")
 
 
-def _message_content(message) -> str:
-    """兼容 dict（前端传来的历史）与 LangChain 消息两种形态"""
-    if isinstance(message, dict):
-        return str(message.get("content") or "")
-    return str(getattr(message, "content", "") or "")
-
-
 def history_order_ids(history) -> list[str]:
     """上文里提到过的订单号（按出现顺序去重）"""
-    chunks = [_message_content(item) for item in (history or [])]
+    chunks = [message_content(item) for item in (history or [])]
     return order_ids("\n".join(chunk for chunk in chunks if chunk))
 
 
