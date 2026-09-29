@@ -22,7 +22,7 @@ server-py/app/
 ├── security/            安全层：白名单→规则→小模型→输出检查 + 身份令牌 + 滑块门禁
 ├── resilience/          韧性层：熔断三态机 + 模型降级 + 工具超时重试
 ├── tools/               工具层：订单 / 物流 / 用户订单查询（每次调用都校验数据归属）
-├── observability/       Token 用量与对话记录（存 Redis，不可用时降级内存）
+├── observability/       Token 用量 + 对话记录（Redis）+ 全链路追踪（run/step 落 PostgreSQL）
 ├── db/                  Postgres / Redis / 会话解析（含历史数据权限裁剪）
 ├── routers/             HTTP 接口层（很薄：只做协议解析 + SSE 推送）
 ├── utils/               接地校验、人工接力判定、ID 解析、消息工具
@@ -191,7 +191,54 @@ SSE 接口需加 `-N` 参数禁用 curl 缓冲，才能看到流式输出。
 
 > Redis 不可用时，用量与对话记录会降级写入进程内存（仅保留最近若干条），不影响对话主流程。
 
-## 8. 常见问题
+## 8. 全链路追踪（后台「链路追踪」页签）
+
+**一次请求 = 一条 run，请求里的每个环节 = 一条 step**，落 PostgreSQL，后台按时间线展开，
+每一步的入参出参都能点开看。它就是原来"盯容器日志"的那套流程，变成可回看、可搜索、
+能对着某一条聊天记录打开的页面。
+
+两张表（**启动时自动建**，不需要手动执行，也不需要 pgvector）：
+
+| 表 | 一行是什么 | 关键字段 |
+| --- | --- | --- |
+| `trace_runs` | 一次请求 | run_id / ts / feature（chat·agent·rag·graph）/ question / user_id / session_id / status（ok·blocked·error）/ duration_ms / step_count / error / summary(JSONB) |
+| `trace_steps` | 请求里的一个环节 | run_id + idx（唯一）/ ts / kind / name / status / duration_ms / detail(JSONB) |
+
+时间线上会看到的环节（kind）：
+
+    identity 身份 → input 输入 → guard 安全防护 → blocked 被拦 → handoff 人工接力 →
+    session 会话 → intent 意图 → node 图节点 → retrieval 检索 → rerank 重排 →
+    llm 模型调用 → tool / tool_result 工具入参出参 → grounding 接地校验 →
+    output 输出检查 → answer 回答 → response 返回
+
+接口（都在 `/api/admin/trace`，鉴权与其它后台接口一致）：
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET  /api/admin/trace/runs` | 列表，支持 `feature` / `status` / `q`（问题、run_id、用户）/ `limit` / `offset` |
+| `GET  /api/admin/trace/stats` | 今天各入口跑了多少次、失败几次 |
+| `GET  /api/admin/trace/runs/{run_id}` | 一条追踪的完整时间线（每步的耗时、状态、入参出参） |
+| `DELETE /api/admin/trace/runs` | 清空追踪记录（**不动对话记录**） |
+
+实现要点（都在 `server-py/app/observability/trace.py` 的注释里）：
+
+- **ContextVar 埋点**：入口 `start_trace()` 之后，调用链深处直接 `trace_step(...)`，
+  不用把 trace 对象一层层塞进函数签名；没有追踪上下文时全是空操作（零成本）。
+- **缓冲 + 一次事务落库**：步骤先进内存，收尾时一个事务写 run + 全部 step，
+  追踪绝不拖慢 SSE 流式请求。
+- **失败不影响业务**：PostgreSQL 连不上时，服务照常启动、请求照常回答，只是追踪不落库。
+- **截断写明**：单字段超 `TRACE_MAX_STR` 截断并标注"原文共多少字"，单步明细超
+  `TRACE_MAX_DETAIL` 只留预览，步骤超 `TRACE_MAX_STEPS` 丢弃并在 summary 里报数。
+- **run_id 复用对话记录的 trace_id**：后台「对话记录」和「链路追踪」看的是同一次请求，
+  两边可以互相对照。
+- **保留 7 天**（`TRACE_RETENTION_DAYS`）：每次写入顺手清掉过期的。
+
+相关环境变量：`TRACE_ENABLED` / `TRACE_MAX_STR` / `TRACE_MAX_DETAIL` / `TRACE_MAX_STEPS` /
+`TRACE_RETENTION_DAYS` / `TRACE_MAX_LLM_CALLS` / `TRACE_PROMPT_PREVIEW_CHARS`（见 `.env.example`）。
+
+> 关掉 `TRACE_ENABLED=false` 后埋点变成空操作，后台该页签显示"没有记录"，业务不受影响。
+
+## 9. 常见问题
 
 - **启动时报 Postgres 连接/密码错误**：`app/retrieval/rag_chain.py` 在模块导入时会立即连接数据库初始化向量库，确保 `.env` 中的 Postgres 配置正确且服务已启动，再启动 FastAPI。
 - **RAG 查询无结果**：检查是否已执行第 4 步的 `ingest` 脚本。

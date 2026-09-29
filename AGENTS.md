@@ -33,7 +33,7 @@ git push
 ## 三、改完代码要跑的验证
 
 ```bash
-# 单元测试（离线，不需起服务；约 12 秒，53 条黄金测试）
+# 单元测试（离线，不需起服务；约 12 秒，57 条黄金测试）
 cd server-py && python -m unittest discover -s tests -t .
 
 # 线上业务验收（4 个入口 + 退款三态 + 注入拦截 + 后台，16 项，约 20 秒）
@@ -63,9 +63,11 @@ python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
 | `server-py/app/retrieval/` | **检索层**：rag_chain（阈值过滤 + 生成）/ rerank（精排）/ query_utils（归一、关键词兜底、RRF）/ kb_bridge（借用链路） |
 | `server-py/app/security/` | 四层提示词防护（白名单 / 规则 / 小模型 / 输出检查）+ 身份令牌 + 滑块门禁 |
 | `server-py/app/resilience/` | **韧性层**：circuit（熔断三态机）/ model_fallback（模型降级）/ tool_guard（工具超时重试） |
+| `server-py/app/observability/` | **观测层**：usage（Token 用量 + 埋点桥）/ chatlog（对话记录，Redis）/ trace + trace_store（**全链路追踪**：run + step 落 PostgreSQL） |
+| `server-py/app/db/` | PostgreSQL 连接串 + asyncpg 连接池 / Redis / 会话解析（历史数据权限裁剪） |
 | `server-py/app/utils/handoff.py` | 退款族意图判定与"人工接力"话术 |
 | `server-py/app/utils/grounding.py` | 答案接地校验（防编造订单） |
-| `server-py/tests/` | 53 条单测（security / order / resilience / rag / handoff / prompts 六个文件）+ 3 套评测集（注入 18 / 检索 8 / 退款意图 20 = 46 条） |
+| `server-py/tests/` | 57 条单测（security / order / resilience / rag / handoff / prompts / trace 七个文件）+ 3 套评测集（注入 17 / 检索 7 / 退款意图 18 = 42 条） |
 | `client/src/` | Vue3 前端（四个业务页 + 管理后台 9 个页签） |
 
 ## 六、风格要求（用户偏好）
@@ -73,7 +75,7 @@ python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
 - 回复用中文，**给实测证据**（真实接口返回、真实数字），不要只说"已完成"
 - 有线上真实事故时，写清"现象 → 根因 → 修法 → 验证"，这类内容用户会拿去面试讲
 - 改动尽量小而聚焦；改完顺手把单测/评测集补上，测试与评测是这套项目的卖点之一
-- **测试总数有硬上限**：单测 + 评测用例合计 **≤ 100 条**（当前 53 + 46 = 99）。这是用户明确要求：
+- **测试总数有硬上限**：单测 + 评测用例合计 **≤ 100 条**（当前 57 + 42 = 99）。这是用户明确要求：
   宁可少而准，也不要一堆乱七八糟的。要加新用例，就先把被它取代的旧用例合并或删掉，别让总数涨上去
 - 只留"黄金测试"：每条都要能说清它拦的是哪类错（线上事故回归 / 三态与边界 / 拦截与放行的对照）。
   说不清、或换个实现照样通过的，直接删
