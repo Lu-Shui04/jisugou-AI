@@ -32,6 +32,7 @@ import time
 from typing import Optional
 
 from app.db import redis_client
+from app.prompts.handoff import JUDGE_FEWSHOT, JUDGE_SYSTEM
 from app.resilience import CircuitOpenError, get_breaker
 
 logger = logging.getLogger("jisu.handoff")
@@ -152,33 +153,6 @@ _NOISE = (
     "客服", "人工", "办理", "申请", "我要", "我想", "还是", "就是", "这个",
     "那个", "我的", "你们", "怎么办", "吗", "呢", "吧", "哦", "啊", "呀",
 )
-
-_JUDGE_SYSTEM = """你是电商客服系统的意图判定器。只判断用户这句话对「退款 / 退货 / 售后投诉 / 改收货信息」的真实意图。
-
-action：用户要**现在就办**这件事（申请退款、退货、催办退款、改收货地址、投诉），需要人工代为操作。
-info：用户在**咨询**规则、时效、条件、流程，或问"能不能退"—— 想知道答案，不是要你代操作。
-progress：用户在问**自己这一单**的退款进度 / 状态 / 到账了没有。
-mixed：这句话里既有退款相关诉求，又同时问了别的业务问题（商品、价格、发票、物流等）。
-none：与退款、退货、投诉、改收货信息都无关。
-
-判断要点：
-1. 只要没有"现在就办"的意思，一律算 info —— 宁可判 info，也不要误判成 action。
-2. "退款需要多少天""几天到账""钢化膜能退吗""退款流程是什么"都是 info。
-3. "我要退款""帮我退了这个订单""我要投诉"是 action。
-4. "我的退款到哪了""退款进度查一下"是 progress。
-
-只输出 JSON，例如：{"kind":"info"}"""
-
-_JUDGE_FEWSHOT = [
-    ("我要退款", '{"kind":"action"}'),
-    ("帮我退款 ORD-003", '{"kind":"action"}'),
-    ("退款需要多少天？", '{"kind":"info"}'),
-    ("钢化膜能退吗", '{"kind":"info"}'),
-    ("我的退款到哪了", '{"kind":"progress"}'),
-    ("怎么申请退款？教我怎么弄", '{"kind":"info"}'),
-    ("我要退款，顺便问下 X6 耳机多少钱", '{"kind":"mixed"}'),
-    ("耳机多久发货", '{"kind":"none"}'),
-]
 
 _memory_cache: dict = {}
 
@@ -337,8 +311,8 @@ async def _judge(text: str) -> dict:
         return {"kind": "mixed", "layer": "error", "ok": False,
                 "reason": "未配置小模型 API Key（fail-open：走正常链路）"}
 
-    messages = [{"role": "system", "content": _JUDGE_SYSTEM}]
-    for user_text, assistant_text in _JUDGE_FEWSHOT:
+    messages = [{"role": "system", "content": JUDGE_SYSTEM}]
+    for user_text, assistant_text in JUDGE_FEWSHOT:
         messages.append({"role": "user", "content": user_text})
         messages.append({"role": "assistant", "content": assistant_text})
     messages.append({"role": "user", "content": text[:400]})
