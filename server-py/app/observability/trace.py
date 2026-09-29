@@ -50,11 +50,13 @@ RETENTION_DAYS = int(os.getenv("TRACE_RETENTION_DAYS", "7"))
 WRITE_TIMEOUT_SECONDS = float(os.getenv("TRACE_WRITE_TIMEOUT_SECONDS", "3"))
 
 # 入口 → 展示名（管理后台的筛选下拉直接用这个）
+# 文案与前端管理后台保持完全一致（AdminView 的 ROUTE_LABELS 用的是这一套），
+# 否则同一个入口在两个页签里会有两种叫法
 ROUTE_LABELS = {
     "chat": "基础对话",
-    "agent": "订单 Agent",
+    "agent": "订单查询",
     "rag": "知识库问答",
-    "graph": "多智能体中枢",
+    "graph": "智能中枢",
 }
 
 # 阶段名 → 步骤类型（决定前端显示哪个图标、哪一组颜色）
@@ -69,7 +71,9 @@ STAGE_KINDS = {
     "session": "session",
     "output": "output",
     "grounding": "grounding",
-    "grounding_blocked": "error",
+    # 接地校验拦下编造回答：这是"策略拦住了"，不是程序崩了 —— 归到 grounding 这一层
+    # （状态仍是 error，时间线上红点 + 接地图标，和真异常区分开）
+    "grounding_blocked": "grounding",
     "intent": "intent",
     "node": "node",
     "sources": "sources",

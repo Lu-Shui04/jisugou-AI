@@ -181,12 +181,17 @@ class TestUsageBridge(TraceCase):
             usage = usage_mod.RequestUsage(route="chat", user_id="U-101")
             usage.stage("guard", layer="rule", category="leak_system_prompt")
             usage.stage("blocked", message="这条消息小购不能处理哦")
+            # 接地校验拦下编造：是"策略拦住"，不是程序崩了 —— 归到 grounding 这一层，
+            # 但状态仍是 error（时间线上红点 + 接地图标，跟真异常区分开）
+            usage.stage("grounding_blocked", blocked=True, offending=["ORD-777"])
             usage.set_error("blocked/rule/leak_system_prompt")
             asyncio.run(usage.finish(status="blocked"))
 
         by_kind = {step["kind"]: step for step in usage.trace.steps}
         self.assertEqual(by_kind["guard"]["status"], "ok")
         self.assertEqual(by_kind["blocked"]["status"], "error", "被拦下的那一步要标成异常")
+        self.assertEqual(by_kind["grounding"]["status"], "error")
+        self.assertEqual(by_kind["grounding"]["name"], "grounding_blocked")
         self.assertEqual(usage.trace.status, "blocked")
         self.assertIn("leak_system_prompt", usage.trace.error)
 

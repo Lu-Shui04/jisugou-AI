@@ -172,9 +172,11 @@ async def stats(pool, labels: dict) -> dict:
         rows = await conn.fetch(
             """
             SELECT feature,
-                   count(*)                                   AS total,
-                   count(*) FILTER (WHERE status <> 'ok')     AS failed,
-                   count(*) FILTER (WHERE status = 'running') AS running
+                   count(*)                                              AS total,
+                   -- 只把 error / blocked 算失败：running 是"还没跑完"，
+                   -- 算进失败会让人以为出事了（页面同时显示"失败 1 / 进行中 1"很吓人）
+                   count(*) FILTER (WHERE status IN ('error', 'blocked')) AS failed,
+                   count(*) FILTER (WHERE status = 'running')            AS running
             FROM trace_runs
             WHERE ts >= date_trunc('day', now())
             GROUP BY feature ORDER BY total DESC
