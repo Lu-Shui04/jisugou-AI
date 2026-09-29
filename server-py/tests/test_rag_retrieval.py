@@ -1,7 +1,7 @@
 """检索层单测：口语化查询归一 + 关键词兜底（不需要向量库/网络）"""
 import unittest
 
-from app.chains.query_utils import keyword_search, normalize_query
+from app.retrieval.query_utils import keyword_search, normalize_query
 
 
 class TestNormalizeQuery(unittest.TestCase):

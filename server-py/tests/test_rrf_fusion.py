@@ -3,7 +3,7 @@ import unittest
 
 from langchain_core.documents import Document
 
-from app.chains.query_utils import keyword_search, rrf_fuse
+from app.retrieval.query_utils import keyword_search, rrf_fuse
 
 
 def make_doc(source: str):

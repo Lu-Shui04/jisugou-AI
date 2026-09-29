@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.data.mock import logistics
 from app.security import access, identity
-from app.tools.resilience import resilient_tool
+from app.resilience.tool_guard import resilient_tool
 from app.utils.ids import normalize_id, order_ids, resolve_order_ids, tracking_nos, user_ids
 
 

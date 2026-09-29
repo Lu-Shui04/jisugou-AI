@@ -19,8 +19,8 @@ from app.db.postgres import PG_CONNECTION_STRING
 from app.models.deepseek import create_model
 from app.models.embedding import embeddings
 from app.resilience import CircuitOpenError
-from app.chains import rerank as rerank_module
-from app.chains.query_utils import (  # noqa: F401  (KNOWLEDGE_DIR / keyword_search 供其他模块导入)
+from app.retrieval import rerank as rerank_module
+from app.retrieval.query_utils import (  # noqa: F401  (KNOWLEDGE_DIR / keyword_search 供其他模块导入)
     KNOWLEDGE_DIR,
     keyword_search,
     load_sections,

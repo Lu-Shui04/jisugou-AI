@@ -1,6 +1,6 @@
 from langchain_core.runnables import RunnableConfig
 
-from app.chains.rag_chain import rag_chain_with_sources, strip_citations
+from app.retrieval.rag_chain import rag_chain_with_sources, strip_citations
 
 
 def _history_text(state, limit: int = 6) -> str:

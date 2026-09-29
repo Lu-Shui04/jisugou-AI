@@ -171,21 +171,21 @@ class TestSmallTalkGuard(unittest.TestCase):
     """纯寒暄不该触发知识库检索（否则一句"你好呀"后面会挂一条"依据"）"""
 
     def test_01_greetings_are_small_talk(self):
-        from app.chains.query_utils import is_small_talk
+        from app.retrieval.query_utils import is_small_talk
 
         for text in ["你好", "你好呀", "您好～", "在吗", "谢谢！", "好的", "拜拜", "hello", "嗯嗯"]:
             with self.subTest(text=text):
                 self.assertTrue(is_small_talk(text))
 
     def test_02_real_questions_are_not_small_talk(self):
-        from app.chains.query_utils import is_small_talk
+        from app.retrieval.query_utils import is_small_talk
 
         for text in ["充电宝多少钱", "你好，充电宝多少钱", "退款需要多少天", "这个能带上飞机吗"]:
             with self.subTest(text=text):
                 self.assertFalse(is_small_talk(text))
 
     def test_03_source_line_format(self):
-        from app.chains.query_utils import build_source_line
+        from app.retrieval.query_utils import build_source_line
 
         line = build_source_line([
             {"source": "products.md#便携充电宝 20000mAh", "score": 0.5907},
@@ -204,7 +204,7 @@ class TestModelCircuit(unittest.TestCase):
 
     def test_09_open_skips_primary_and_uses_fallback(self):
         """主模型熔断：连超时都不等，直接走备用模型"""
-        from app.models.resilience import ResilientChatOpenAI
+        from app.resilience.model_fallback import ResilientChatOpenAI
 
         model = ResilientChatOpenAI(model="primary", api_key="x", base_url="http://127.0.0.1:1/v1")
         backup = mock.MagicMock()
@@ -220,7 +220,7 @@ class TestModelCircuit(unittest.TestCase):
 
     def test_10_open_without_fallback_raises_immediately(self):
         """没配备用模型时，熔断打开应立刻抛 CircuitOpenError（而不是去连网络）"""
-        from app.models.resilience import ResilientChatOpenAI
+        from app.resilience.model_fallback import ResilientChatOpenAI
 
         model = ResilientChatOpenAI(model="primary", api_key="x", base_url="http://127.0.0.1:1/v1")
         model.fallback = None
@@ -234,7 +234,7 @@ class TestModelCircuit(unittest.TestCase):
 
     def test_11_successful_stream_call_recovers_breaker(self):
         """流式：能吐出第一个 chunk 就说明模型是活的，要计入成功"""
-        from app.models.resilience import ResilientChatOpenAI
+        from app.resilience.model_fallback import ResilientChatOpenAI
 
         model = ResilientChatOpenAI(model="primary", api_key="x", base_url="http://127.0.0.1:1/v1")
         backup = mock.MagicMock()

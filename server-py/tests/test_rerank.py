@@ -13,7 +13,7 @@ from unittest import mock
 import httpx
 from langchain_core.documents import Document
 
-from app.chains import rerank
+from app.retrieval import rerank
 from app.resilience import circuit
 
 

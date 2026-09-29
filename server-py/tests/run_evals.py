@@ -125,7 +125,7 @@ async def eval_security(use_cache: bool = False, limit: int = 0) -> dict:
 
 def eval_rag(top_k: int = 4) -> dict:
     """检索评测：只看召回，不调用大模型"""
-    from app.chains.rag_chain import retrieve_with_threshold
+    from app.retrieval.rag_chain import retrieve_with_threshold
 
     cases = load_cases("rag_cases.jsonl")
     hit_at_k = 0

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.chains import kb_bridge
+from app.retrieval import kb_bridge
 from app.chains.basic_chat import (
     customer_service_chain,
     customer_service_stream_chain,

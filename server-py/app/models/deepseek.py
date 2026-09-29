@@ -12,7 +12,7 @@ import os
 
 from langchain_openai import ChatOpenAI
 
-from app.models.resilience import (
+from app.resilience.model_fallback import (
     MODEL_MAX_RETRIES,
     MODEL_STREAM_TIMEOUT_SECONDS,
     MODEL_TIMEOUT_SECONDS,
