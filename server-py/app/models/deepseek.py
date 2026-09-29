@@ -3,7 +3,7 @@
 将 DeepSeek 封装为 LangChain ChatModel
 DeepSeek 兼容 OpenAI 协议，使用 ChatOpenAI 并替换 base_url 即可
 
-容错策略（见 app/models/resilience.py）：
+容错策略（见 app/resilience/model_fallback.py）：
 - 超时：非流式 30s / 流式 60s，可用 MODEL_TIMEOUT_SECONDS 覆盖
 - 重试：max_retries 默认 2 次，SDK 自带指数退避
 - 降级：配置 FALLBACK_MODEL_NAME + FALLBACK_API_KEY 后，主模型失败自动切备用模型

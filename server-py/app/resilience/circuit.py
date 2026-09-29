@@ -428,9 +428,9 @@ _breakers: dict[str, CircuitBreaker] = {}
 _registry_lock = threading.RLock()
 
 # 依赖清单（名字即"熔断粒度"）：llm:chat / llm:chat:fallback / embedding:zhipu /
-# judge:security / judge:handoff
-# 注：rerank（硅基流动 bge-reranker-v2-m3）没接熔断器，它的容错是
-# RAG_RERANK_TIMEOUT_SECONDS 超时 + fail-open（重排失败就保持原顺序）
+# judge:security / judge:handoff / rerank:siliconflow / cache:redis
+# 注：每个熔断器都有一层 fail-open 兜底（重排失败保持原顺序、检索失败走关键词、
+# 判定小模型失败放行、Redis 不可用退内存），熔断只是让兜底来得更快。
 def get_breaker(name: str) -> CircuitBreaker:
     with _registry_lock:
         breaker = _breakers.get(name)

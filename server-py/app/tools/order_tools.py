@@ -54,7 +54,7 @@ def _user_hint() -> str:
     return f"系统内现有用户 ID：{ids[0]} ~ {ids[-1]}（共 {len(ids)} 个）"
 
 
-# 每个工具都套了一层 超时 + 重试 + 降级（app/tools/resilience.py）：
+# 每个工具都套了一层 超时 + 重试 + 降级（app/resilience/tool_guard.py）：
 # 外部系统超时/抖动时自动重试，最终失败返回可读的 error JSON，不打断 Agent 链路
 @tool(
     "getOrderInfo",
