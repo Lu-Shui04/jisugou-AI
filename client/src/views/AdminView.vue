@@ -552,108 +552,131 @@
           <header class="page-head">
             <h2>全链路追踪</h2>
             <div class="head-actions">
-              <label class="inline-label">
-                <input type="checkbox" v-model="traceAutoRefresh" /> 自动刷新(5s)
-              </label>
-              <button class="ghost-btn" @click="loadTraces">刷新</button>
+              <button class="ghost-btn" @click="loadTraces()">刷新</button>
+              <button class="ghost-btn" :class="{ on: traceAutoRefresh }" @click="toggleTraceAuto">
+                {{ traceAutoRefresh ? '自动刷新中(8s)' : '自动刷新(8s)' }}
+              </button>
+              <button class="ghost-btn danger" @click="clearTraces">清空</button>
             </div>
           </header>
 
           <p class="hint">
-            每一次请求从<strong>用户输入</strong> → <strong>提示词安全防护</strong> → <strong>意图识别 / 检索 / 工具调用</strong> →
-            <strong>模型调用</strong> → <strong>输出检查</strong> → <strong>最终回复</strong>，全程按发生顺序记录；点任意一条看时间线。
+            一次请求从<strong>用户输入</strong> → <strong>安全防护</strong> → <strong>意图识别 / 检索 / 工具调用</strong> →
+            <strong>模型调用</strong> → <strong>输出检查</strong> → <strong>最终回复</strong>，全程按发生顺序记下来；
+            左边挑一次请求，右边按时间线展开每一步，点任意一步看它的原始入参出参。
           </p>
 
-          <div class="panel">
-            <div class="panel-head">
-              <h3>最近 {{ tracesData ? tracesData.items.length : 0 }} 次请求</h3>
-              <span class="panel-note" v-if="tracesData">共 {{ fmtNum(tracesData.total) }} 条记录</span>
-            </div>
+          <p v-if="traceStats && traceStats.enabled === false" class="hint trace-off">
+            全链路追踪当前处于关闭状态（TRACE_ENABLED=false），这里不会出现新记录。
+          </p>
 
-            <div
-              v-for="turn in (tracesData ? tracesData.items : [])"
-              :key="turn.trace_id"
-              class="trace-row"
-              :class="{ active: traceDetail && traceDetail.trace_id === turn.trace_id }"
-              @click="openTrace(turn.trace_id)"
-            >
-              <span class="tag" :class="turn.route">{{ routeLabel(turn.route) }}</span>
-              <span class="turn-user">{{ turn.user_name || shortId(turn.user_id) || '匿名' }}</span>
-              <span class="trace-q">{{ turn.question }}</span>
-              <span class="trace-meta">{{ turn.latency_ms }}ms · {{ fmtNum(turn.total_tokens) }}tok</span>
-              <span v-if="turn.status !== 'ok'" class="badge error">{{ turn.status === 'blocked' ? '被拦截' : '失败' }}</span>
-              <span v-else class="badge">成功</span>
+          <div class="trace-toolbar">
+            <div class="trace-stats">
+              <span v-for="s in traceStatsToday" :key="s.feature" class="stat-chip">
+                {{ s.label || routeLabel(s.feature) }} <b>{{ fmtNum(s.total) }}</b>
+                <em v-if="s.failed" class="bad">失败 {{ fmtNum(s.failed) }}</em>
+                <em v-if="s.running" class="run">进行中 {{ fmtNum(s.running) }}</em>
+              </span>
+              <span v-if="!traceStatsToday.length" class="stat-chip muted">今天还没有追踪记录</span>
             </div>
-            <p v-if="!tracesData || !tracesData.items.length" class="empty">还没有请求记录</p>
+            <div class="trace-filters">
+              <select v-model="traceFilter.feature" @change="loadTraces(true)">
+                <option value="">全部入口</option>
+                <option value="chat">基础对话</option>
+                <option value="agent">订单查询</option>
+                <option value="rag">知识库问答</option>
+                <option value="graph">智能中枢</option>
+              </select>
+              <select v-model="traceFilter.status" @change="loadTraces(true)">
+                <option value="">全部状态</option>
+                <option value="ok">成功</option>
+                <option value="error">失败</option>
+                <option value="blocked">被拦截</option>
+                <option value="running">进行中</option>
+              </select>
+              <input
+                v-model="traceFilter.q"
+                class="trace-search"
+                placeholder="搜问题 / runId"
+                @keyup.enter="loadTraces(true)"
+              />
+            </div>
           </div>
 
-          <div v-if="traceDetail" class="panel">
-            <div class="panel-head">
-              <h3>链路明细 · {{ traceDetail.trace_id }}</h3>
-              <button class="ghost-btn" @click="traceDetail = null">收起</button>
-            </div>
-
-            <div class="trace-terminal">
-              <div class="trace-line trace-head">
-                <span>{{ routeLabel(traceDetail.route) }}</span>
-                <span>{{ traceDetail.user_name || '匿名' }}（{{ traceDetail.user_id || '未标记' }}）</span>
-                <span>{{ fmtTime(traceDetail.ts) }}</span>
-                <span>总耗时 {{ traceDetail.latency_ms }}ms</span>
-                <span>token {{ fmtNum(traceDetail.total_tokens) }}</span>
-              </div>
-
-              <div v-for="(stage, index) in (traceDetail.stages || [])" :key="index" class="trace-line">
-                <span class="trace-ms">+{{ stage.at_ms }}ms</span>
-                <span class="trace-kind" :class="stageKindClass(stage.name)">
-                  {{ TRACE_LABELS[stage.name] || stage.name }}
-                </span>
-                <span class="trace-body">{{ stageSummary(stage) }}</span>
-              </div>
-
-              <div v-if="!(traceDetail.stages || []).length" class="trace-line">
-                <span class="trace-body">这条记录产生于旧版本，没有链路阶段数据</span>
-              </div>
-            </div>
-
-            <div v-if="(traceDetail.llm_calls_detail || []).length" class="sub-panel">
-              <h4>模型调用明细（{{ traceDetail.llm_calls_detail.length }} 次）</h4>
-              <div v-for="(call, index) in traceDetail.llm_calls_detail" :key="index" class="llm-call">
-                <div class="llm-call-head">
-                  <span class="badge">#{{ index + 1 }}</span>
-                  <span class="muted">{{ call.model || '-' }}</span>
-                  <span class="muted">输入 {{ fmtNum(call.prompt_tokens) }} / 输出 {{ fmtNum(call.completion_tokens) }} token</span>
-                  <span class="muted">{{ call.latency_ms }}ms</span>
+          <div class="trace-split">
+            <!-- 左：请求列表（哪一次请求） -->
+            <aside class="trace-list">
+              <div v-if="!traceRuns.length" class="empty">暂无记录，去对话或 Agent 跑一次就会出现在这里</div>
+              <button
+                v-for="r in traceRuns"
+                :key="r.runId"
+                class="trace-item"
+                :class="{ active: r.runId === traceRunId }"
+                @click="openTrace(r.runId)"
+              >
+                <div class="trace-item-head">
+                  <span class="trace-dot" :class="'st-' + r.status"></span>
+                  <span class="tag" :class="r.feature">{{ r.featureLabel || routeLabel(r.feature) }}</span>
+                  <span class="trace-time">{{ fmtClock(r.time) }}</span>
+                  <span class="trace-meta">{{ fmtNum(r.durationMs) }}ms · {{ fmtNum(r.stepCount) }} 步</span>
                 </div>
-                <pre class="llm-prompt">{{ call.prompt_preview || '（无预览）' }}</pre>
-              </div>
-            </div>
+                <div class="trace-item-q">{{ r.question || '(无问题文本)' }}</div>
+                <div v-if="r.error" class="trace-item-err">{{ r.error }}</div>
+              </button>
+            </aside>
 
-            <div v-if="(traceDetail.retrievals || []).length" class="sub-panel">
-              <h4>知识库检索（{{ traceDetail.retrievals.length }} 次）</h4>
-              <div v-for="(item, ri) in traceDetail.retrievals" :key="ri" class="retrieval">
-                <div class="retrieval-head">
-                  <span class="retrieval-query">{{ item.query }}</span>
-                  <span class="retrieval-meta">Top-K {{ item.top_k }} · 阈值 {{ item.threshold }} · 保留 {{ item.kept }} 条</span>
-                </div>
-                <div class="hit-list">
-                  <div v-for="(hit, hi) in item.hits" :key="hi" class="hit" :class="{ dropped: !hit.kept }">
-                    <span class="hit-score">{{ hit.score }}</span>
-                    <span class="hit-source">{{ hit.source }}</span>
-                    <span class="hit-state">{{ hit.kept ? '保留' : '被阈值过滤' }}</span>
+            <!-- 右：这一次请求的时间线 -->
+            <main class="trace-detail">
+              <div v-if="!traceDetail" class="empty">← 选一条记录，查看它的完整执行链路</div>
+              <template v-else>
+                <div class="trace-head-card">
+                  <div class="th-line1">
+                    <span class="tag" :class="traceDetail.feature">{{ traceDetail.featureLabel || routeLabel(traceDetail.feature) }}</span>
+                    <span class="trace-dot" :class="'st-' + traceDetail.status"></span>
+                    <span class="th-status">{{ traceStatusLabel(traceDetail.status) }}</span>
+                    <span class="th-dim">总耗时 {{ fmtNum(traceDetail.durationMs) }}ms</span>
+                    <span class="th-dim">{{ fmtNum(traceDetail.stepCount) }} 步</span>
+                    <span class="th-runid" :title="traceDetail.runId">{{ traceDetail.runId }}</span>
+                  </div>
+                  <div class="th-q">{{ traceDetail.question || '(无问题文本)' }}</div>
+                  <div class="th-meta">
+                    <span>身份：{{ traceDetail.userName || traceDetail.userId || '匿名' }}</span>
+                    <span>时间：{{ fmtClock(traceDetail.time) }}</span>
+                    <span v-if="traceDetail.error" class="th-err">错误：{{ traceDetail.error }}</span>
+                  </div>
+                  <div v-if="Object.keys(traceDetail.summary || {}).length" class="th-summary">
+                    <span v-for="(value, key) in traceDetail.summary" :key="key" class="sum-chip">
+                      {{ key }}: {{ shortValue(value) }}
+                    </span>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div class="sub-panel">
-              <h4>用户输入 → 最终回复</h4>
-              <div class="qa-label">用户提问</div>
-              <div class="qa-text">{{ traceDetail.question }}</div>
-              <div class="qa-label">最终回复</div>
-              <div class="qa-text answer"><MarkdownText :content="traceDetail.answer || ''" /></div>
-              <div v-if="traceDetail.error" class="qa-label">失败原因</div>
-              <div v-if="traceDetail.error" class="qa-text error-text">{{ traceDetail.error }}</div>
-            </div>
+                <div class="timeline">
+                  <div
+                    v-for="(step, si) in (traceDetail.steps || [])"
+                    :key="stepKey(step, si)"
+                    class="tl-step"
+                    :class="'k-' + step.kind"
+                  >
+                    <div class="tl-rail"><span class="tl-dot" :class="{ bad: step.status !== 'ok' }"></span></div>
+                    <div class="tl-body">
+                      <button class="tl-head" @click="toggleStep(stepKey(step, si))">
+                        <span class="tl-icon">{{ traceKindIcon(step.kind) }}</span>
+                        <span class="tl-name">{{ step.name }}</span>
+                        <span class="tl-off">+{{ fmtNum(step.offsetMs) }}ms</span>
+                        <span v-if="step.durationMs" class="tl-dur">{{ fmtNum(step.durationMs) }}ms</span>
+                        <span v-if="step.status !== 'ok'" class="tl-badge" :class="'st-' + step.status">
+                          {{ traceStatusLabel(step.status) }}
+                        </span>
+                        <span class="tl-caret">{{ isStepOpen(stepKey(step, si)) ? '▾' : '▸' }}</span>
+                      </button>
+                      <pre v-if="isStepOpen(stepKey(step, si))" class="tl-json">{{ prettyJson(step.detail) }}</pre>
+                    </div>
+                  </div>
+                  <p v-if="!(traceDetail.steps || []).length" class="empty">这条记录没有步骤明细（可能产生于旧版本）</p>
+                </div>
+              </template>
+            </main>
           </div>
         </section>
 
@@ -932,7 +955,7 @@
 
 <script setup>
 // 管理员后台：登录后查看 Token 统计、用户对话记录、知识库检索与重排明细
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, reactive, onMounted, onUnmounted } from 'vue';
 import { useAdmin } from '../composables/useAdmin.js';
 import MarkdownText from '../components/MarkdownText.vue';
 
@@ -979,28 +1002,30 @@ const userOptions   = ref([]);
 // 会话列表（下拉选择，不用手输 session_id）
 const sessionOptions = ref([]);
 
-// 全链路追踪
-const tracesData        = ref(null);
-const traceDetail       = ref(null);
-const traceAutoRefresh  = ref(false);
+// 全链路追踪：左边「哪次请求」，右边「这次请求的每一步」，每步可展开看入参出参
+const traceStats       = ref(null);    // { totalRuns, today: [{ feature, label, total, failed, running }] }
+const traceRuns        = ref([]);      // 左侧列表
+const traceDetail      = ref(null);    // 右侧详情（含 steps）
+const traceRunId       = ref('');      // 当前选中的 runId
+const traceAutoRefresh = ref(true);    // 默认开：每 8 秒刷一次
+const traceFilter      = ref({ feature: '', status: '', q: '' });
+const traceOpenSteps   = reactive({}); // step.idx -> 是否展开
 let traceTimer = null;
 
-// 各条链路的阶段不完全一样，所以用图标而不是固定编号
-const TRACE_LABELS = {
-  input: '📥 用户输入',
-  guard: '🛡 安全防护',
-  blocked: '⛔ 已拦截',
-  handoff: '📞 退款意图判定 / 人工接力',
-  intent: '🧭 意图识别',
-  node: '🧩 节点完成',
-  retrieval: '🔍 知识库检索',
-  sources: '📎 引用来源',
-  tool: '🔧 调用工具',
-  tool_result: '📦 工具返回',
-  session: '💾 会话缓存',
-  output: '🚦 输出检查',
-  answer: '✅ 最终回复',
+// 步骤 kind → 图标（一眼看出这一段在干什么，没见过的 kind 用 '•' 兜底）
+const TRACE_KIND_ICONS = {
+  identity: '🪪', input: '📥', guard: '🛡', blocked: '⛔', handoff: '📞',
+  session: '💾', output: '🚦', grounding: '🧷', intent: '🧭', node: '🧩',
+  sources: '📎', tool: '🔧', tool_result: '📦', retrieval: '🔍', rerank: '📊',
+  llm: '🤖', answer: '✅', response: '✅', error: '❌',
 };
+const traceKindIcon = (kind) => TRACE_KIND_ICONS[kind] || '•';
+
+const TRACE_STATUS_LABELS = { ok: '成功', error: '失败', blocked: '被拦截', running: '进行中' };
+const traceStatusLabel = (status) => TRACE_STATUS_LABELS[status] || status || '-';
+
+// 默认展开「最需要看入参出参」的那几步：工具调用/返回、异常、重排、模型调用、安全防护
+const TRACE_OPEN_BY_DEFAULT = new Set(['tool', 'tool_result', 'error', 'rerank', 'llm', 'guard']);
 
 // 提示词安全防护
 const securityData     = ref(null);
@@ -1160,72 +1185,151 @@ const loadSecurity = () => run(async () => {
 });
 
 // ── 全链路追踪 ──────────────────────────────────────────────────
-const loadTraces = () => run(async () => {
-  tracesData.value = await request('/conversations?page=1&page_size=30');
-});
+const traceStatsToday = computed(() => traceStats.value?.today || []);
 
-const openTrace = async (traceId) => {
-  await run(async () => {
-    traceDetail.value = await request('/conversations/' + traceId);
-  });
+// 追踪的 time 是 ISO 字符串（别处是毫秒时间戳，所以单独一个格式化函数）
+const fmtClock = (value) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' '
+    + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
 };
 
-const stageKindClass = (name) => 'kind-' + (name || 'other');
+const shortValue = (value) => {
+  let text;
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  if (!text) return '';
+  return text.length > 48 ? text.slice(0, 48) + '…' : text;
+};
 
-const stageSummary = (stage) => {
-  const pick = (key) => stage[key];
-  switch (stage.name) {
-    case 'input':
-      return pick('text') || '';
-    case 'guard':
-      return (pick('allowed') ? '放行' : '拦截')
-        + ' · 层级 ' + (pick('layer') || '-')
-        + ' · 分类 ' + (pick('category') || '-')
-        + ' · ' + fmtNum(pick('latency_ms')) + 'ms'
-        + (pick('cached') ? ' · 命中缓存' : '')
-        + (pick('model') ? ' · ' + pick('model') + ' ' + fmtNum(pick('model_tokens')) + ' token' : '')
-        + (pick('reason') ? ' · ' + pick('reason') : '');
-    case 'blocked':
-      return pick('message') || '';
-    case 'handoff': {
-      // 判定层：rule（零 token 快路径）/ model（小模型）/ cache（缓存）/ error（fail-open）
-      const layerText = { rule: '规则快路径（0 token）', model: '小模型判定', cache: '命中缓存',
-                          error: '小模型不可用（fail-open 走正常链路）',
-                          circuit_open: '熔断打开，直接走正常链路（不再等超时）',
-                          disabled: '判定已关闭',
-                          empty: '空输入' }[pick('layer')] || pick('layer');
-      const tokenText = pick('model_tokens') ? ' · ' + fmtNum(pick('model_tokens')) + ' token' : '';
-      const latText = pick('latency_ms') !== undefined && pick('latency_ms') !== null
-        ? ' · ' + fmtNum(pick('latency_ms')) + 'ms' : '';
-      return '判定 ' + (pick('kind') || '-') + '（' + layerText + '）'
-        + (pick('matched') ? ' · 命中「' + pick('matched') + '」' : '')
-        + (pick('topic') ? ' · 主题 ' + pick('topic') : '')
-        + tokenText + latText + ' · ' + (pick('action') || '');
+const prettyJson = (value) => {
+  try {
+    return JSON.stringify(value === undefined ? {} : value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+// 步骤 key：优先用后端给的 idx，缺了就用数组下标兜底
+const stepKey = (step, index) => (step && step.idx !== undefined && step.idx !== null ? step.idx : index);
+const isStepOpen = (key) => !!traceOpenSteps[key];
+const toggleStep = (key) => { traceOpenSteps[key] = !traceOpenSteps[key]; };
+const resetOpenSteps = () => {
+  Object.keys(traceOpenSteps).forEach((key) => { delete traceOpenSteps[key]; });
+};
+
+// 今天的入口统计拿不到不影响看列表，静默失败
+const loadTraceStats = async () => {
+  try {
+    traceStats.value = await request('/trace/stats');
+  } catch { /* 静默：轮询失败不打扰管理员 */ }
+};
+
+// resetSelection：筛选条件变了，选中项可能已经不在列表里，清掉
+// openNewest：列表刷新后当前没选中时，自动打开最新一条
+const loadTraces = async (resetSelection = false, openNewest = true) => {
+  try {
+    const query = new URLSearchParams({ limit: '80', offset: '0' });
+    if (traceFilter.value.feature) query.set('feature', traceFilter.value.feature);
+    if (traceFilter.value.status) query.set('status', traceFilter.value.status);
+    if (traceFilter.value.q.trim()) query.set('q', traceFilter.value.q.trim());
+    const data = await request('/trace/runs?' + query.toString());
+    traceRuns.value = data.runs || [];
+    if (resetSelection) {
+      traceRunId.value = '';
+      traceDetail.value = null;
     }
-    case 'intent':
-      return '判定意图：' + ((pick('intents') || []).join(' + ') || '-');
-    case 'node':
-      return '节点 ' + (pick('node') || '-') + ' 执行完成';
-    case 'retrieval':
-      return '查询「' + (pick('query') || '') + '」 · 保留 ' + fmtNum(pick('kept')) + ' 条'
-        + ' · 阈值 ' + pick('threshold')
-        + (pick('filtered') ? ' · 全部被过滤' : '')
-        + (pick('degraded') ? ' · 检索降级' : '')
-        + ((pick('sources') || []).length ? ' · ' + (pick('sources') || []).join('、') : '');
-    case 'sources':
-      return '推送 ' + fmtNum(pick('count')) + ' 条引用给前端';
-    case 'tool':
-      return '调用 ' + (pick('tool') || '-') + ' 入参 ' + JSON.stringify(pick('toolInput') || {});
-    case 'tool_result':
-      return (pick('tool') || '') + ' 返回：' + (pick('observation') || '').slice(0, 120);
-    case 'session':
-      return (pick('action') || '') + ' session:' + shortId(pick('session_id') || '');
-    case 'output':
-      return pick('leaked') ? '命中系统提示词泄露，已替换为安全话术' : '未发现泄露';
-    case 'answer':
-      return fmtNum(pick('chars')) + ' 字：' + (pick('text') || '').slice(0, 90);
-    default:
-      return JSON.stringify(stage);
+    if (openNewest && !traceRunId.value && traceRuns.value.length) {
+      await openTrace(traceRuns.value[0].runId);
+    }
+  } catch { /* 静默：后台轮询失败不弹提示（后端没起来时表现一致） */ }
+};
+
+// 地址栏里的 run 参数（深链：把某一次执行直接发给别人看）
+const currentRunParam = () => {
+  try {
+    return new URLSearchParams(window.location.search).get('run') || '';
+  } catch {
+    return '';
+  }
+};
+
+const openTrace = async (runId) => {
+  if (!runId) return;
+  traceRunId.value = runId;
+  resetOpenSteps();
+  try {
+    const data = await request('/trace/runs/' + encodeURIComponent(runId));
+    traceDetail.value = data;
+    (data.steps || []).forEach((step, index) => {
+      if (TRACE_OPEN_BY_DEFAULT.has(step.kind)) traceOpenSteps[stepKey(step, index)] = true;
+    });
+    if (currentRunParam() !== runId) {
+      window.history.replaceState(null, '', '/admin?tab=trace&run=' + encodeURIComponent(runId));
+    }
+  } catch { /* 静默：详情读不到时列表还在，不弹红条 */ }
+};
+
+// 还在跑的那条请求：轮询时补一次详情，看它一步步往前走（不动已经展开的步骤）
+const refreshTraceDetail = async () => {
+  if (!traceRunId.value) return;
+  try {
+    traceDetail.value = await request('/trace/runs/' + encodeURIComponent(traceRunId.value));
+  } catch { /* 静默 */ }
+};
+
+const stopTraceTimer = () => {
+  if (traceTimer) clearInterval(traceTimer);
+  traceTimer = null;
+};
+
+const startTraceTimer = () => {
+  stopTraceTimer();
+  traceTimer = setInterval(async () => {
+    await loadTraceStats();
+    await loadTraces(false, false);
+    if (traceDetail.value && traceDetail.value.status === 'running') await refreshTraceDetail();
+  }, 8000);
+};
+
+const toggleTraceAuto = () => {
+  traceAutoRefresh.value = !traceAutoRefresh.value;
+  if (traceAutoRefresh.value) startTraceTimer(); else stopTraceTimer();
+};
+
+// 进入「链路追踪」页签：拉统计 + 列表；带了 run 深链就直接打开它
+const enterTraceTab = async (runId) => {
+  stopTraceTimer();
+  loadTraceStats();
+  if (runId) {
+    await loadTraces(false, false);
+    await openTrace(runId);
+  } else {
+    await loadTraces();
+  }
+  if (traceAutoRefresh.value) startTraceTimer();
+};
+
+const clearTraces = async () => {
+  if (!window.confirm('清空全部链路追踪记录？（只清追踪记录，聊天记录不受影响）')) return;
+  try {
+    const result = await request('/trace/runs', { method: 'DELETE' });
+    // 地址栏里的 run 一起清掉，避免刷新后又去拉一条已经删掉的记录
+    if (currentRunParam()) window.history.replaceState(null, '', '/admin?tab=trace');
+    traceRunId.value = '';
+    traceDetail.value = null;
+    resetOpenSteps();
+    flash('已清空 ' + fmtNum(result.cleared) + ' 条追踪记录');
+    await loadTraceStats();
+    await loadTraces(false, false);
+  } catch (err) {
+    flashError('清空追踪记录失败：' + (err.message || ''));
   }
 };
 
@@ -1244,10 +1348,8 @@ const availableDays = computed(() => {
   return Array.from(days).sort().reverse();
 });
 
-watch(traceAutoRefresh, (on) => {
-  if (traceTimer) { clearInterval(traceTimer); traceTimer = null; }
-  if (on) traceTimer = setInterval(() => { loadTraces(); }, 5000);
-});
+// 切页签 / 组件卸载时一定要停掉轮询，别让它在别的页签里每 8 秒打一次接口
+onUnmounted(stopTraceTimer);
 
 const runSecurityTest = () => run(async () => {
   const text = securityTestText.value.trim();
@@ -1281,13 +1383,14 @@ const resetSecurityStats = async () => {
 const switchTab = (key) => {
   tab.value = key;
   detail.value = key === 'conversations' ? detail.value : null;
+  if (key !== 'trace') stopTraceTimer();   // 离开追踪页签就停掉轮询
   if (key === 'overview')      loadOverview();
   if (key === 'usage')         loadUsage();
   if (key === 'conversations') loadConversations();
   if (key === 'retrieval')     loadRetrievals();
   if (key === 'users')         loadUsers();
   if (key === 'security')      loadSecurity();
-  if (key === 'trace')         loadTraces();
+  if (key === 'trace')         enterTraceTab();
   if (key === 'sessions')      loadSessions();
   if (key === 'system')        loadSystem();
 };
@@ -1326,6 +1429,12 @@ const exportCsv = () => run(async () => {
 const flash = (text) => {
   notice.value = text;
   setTimeout(() => { if (notice.value === text) notice.value = ''; }, 5000);
+};
+
+// 手动操作失败时闪一下红条：后台的轮询失败都是静默的，只有这种才提示
+const flashError = (text) => {
+  loadError.value = text;
+  setTimeout(() => { if (loadError.value === text) loadError.value = ''; }, 5000);
 };
 
 const refreshAfterClear = async () => {
@@ -1419,9 +1528,12 @@ const handleLogout = async () => {
   systemData.value = null;
   securityData.value = null;
   securityTest.value = null;
-  tracesData.value = null;
+  stopTraceTimer();
+  traceStats.value = null;
+  traceRuns.value = [];
+  traceRunId.value = '';
   traceDetail.value = null;
-  traceAutoRefresh.value = false;
+  resetOpenSteps();
   sessionOptions.value = [];
   tab.value = 'overview';
 };
@@ -1430,8 +1542,15 @@ onMounted(async () => {
   // 后台默认免登录：先探测一次，能通就直接进，不再显示登录表单
   if (!isLoggedIn()) await ensureAccess();
   if (isLoggedIn()) {
-    loadOverview();
-    loadUsers();
+    const deepLink = currentRunParam();
+    if (deepLink) {
+      // 深链 /admin?tab=trace&run=xxx：直接进追踪页签并打开这条记录
+      tab.value = 'trace';
+      await enterTraceTab(deepLink);
+    } else {
+      loadOverview();
+      loadUsers();
+    }
   }
 });
 </script>
@@ -1746,31 +1865,60 @@ select, .filters input, .filters select {
 .card.clickable { cursor: pointer; transition: box-shadow .15s, transform .15s; }
 .card.clickable:hover { box-shadow: 0 6px 18px rgba(37, 99, 235, .15); transform: translateY(-1px); }
 
-.trace-row {
-  display: flex; align-items: center; gap: 8px; padding: 7px 8px;
-  border-bottom: 1px solid #f1f5f9; font-size: 12px; cursor: pointer;
+/* 顶部工具条：今天各入口的统计 + 筛选 */
+.trace-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
 }
-.trace-row:hover  { background: #f8fafc; }
-.trace-row.active { background: #eff6ff; }
-.trace-q { flex: 1; color: #334155; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.trace-meta { color: #94a3b8; font-size: 11px; white-space: nowrap; }
+.trace-stats { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stat-chip {
+  font-size: 11.5px; color: #475569; background: #f8fafc;
+  border: 1px solid #e2e8f0; border-radius: 999px; padding: 3px 10px;
+}
+.stat-chip b { color: #0f172a; }
+.stat-chip.muted { color: #94a3b8; }
+.stat-chip em { font-style: normal; margin-left: 5px; }
+.stat-chip em.bad { color: #dc2626; }
+.stat-chip em.run { color: #b45309; }
+.trace-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trace-search {
+  height: 32px; padding: 0 10px; border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 13px; outline: none; min-width: 180px; background: #fff; color: #334155;
+}
+.trace-search:focus { border-color: #0f766e; }
+.ghost-btn.on { border-color: #0f766e; color: #0f766e; background: #f0fdfa; }
 
-/* 终端风格的时间线 */
-.trace-terminal {
-  background: #0b1220; border-radius: 10px; padding: 12px 14px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px; line-height: 1.9; color: #cbd5e1;
-  max-height: 460px; overflow-y: auto;
+/* 主体：左「哪次请求」+ 右「这次请求的每一步」 */
+.trace-split {
+  display: flex; align-items: stretch; gap: 12px;
+  height: calc(100vh - 300px); min-height: 420px;
 }
-.trace-line { display: flex; gap: 10px; align-items: baseline; }
-.trace-line + .trace-line { border-top: 1px dashed #1e293b; }
-.trace-head { color: #64748b; flex-wrap: wrap; gap: 14px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid #1e293b !important; }
-.trace-ms { color: #475569; width: 64px; flex-shrink: 0; text-align: right; }
-.trace-kind {
-  flex-shrink: 0; width: 132px; color: #93c5fd;
+.trace-list {
+  width: 340px; flex-shrink: 0; overflow-y: auto;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
 }
-.trace-kind.kind-guard      { color: #86efac; }
-.trace-kind.kind-handoff    { color: #fbbf24; }
+.trace-list .empty { padding: 14px 12px; text-align: center; }
+.trace-item {
+  display: block; width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  padding: 9px 12px; border: none; border-bottom: 1px solid #f1f5f9; background: transparent;
+}
+.trace-item:hover { background: #f8fafc; }
+.trace-item.active { background: #eff6ff; box-shadow: inset 3px 0 0 #2563eb; }
+.trace-item-head { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.trace-time { color: #94a3b8; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.trace-meta { color: #94a3b8; font-size: 11px; margin-left: auto; white-space: nowrap; }
+.trace-dot { width: 7px; height: 7px; border-radius: 50%; background: #cbd5e1; flex-shrink: 0; }
+.trace-dot.st-ok { background: #22c55e; }
+.trace-dot.st-error { background: #ef4444; }
+.trace-dot.st-blocked { background: #f59e0b; }
+.trace-dot.st-running { background: #2563eb; }
+.trace-item-q {
+  margin-top: 4px; font-size: 12.5px; color: #1e293b; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.trace-item-err { margin-top: 3px; font-size: 11px; color: #dc2626; }
+.trace-off { color: #b45309; }
+
 .circuit-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .circuit-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -1784,21 +1932,67 @@ select, .filters input, .filters select {
 .circuit-state.open { background: #fef2f2; color: #b91c1c; }
 .circuit-state.half_open { background: #fffbeb; color: #b45309; }
 .ghost-btn.tiny { padding: 2px 8px; font-size: 11px; }
-.trace-kind.kind-blocked    { color: #fca5a5; }
-.trace-kind.kind-retrieval  { color: #fcd34d; }
-.trace-kind.kind-tool,
-.trace-kind.kind-tool_result { color: #c4b5fd; }
-.trace-kind.kind-answer     { color: #6ee7b7; }
-.trace-kind.kind-output     { color: #f9a8d4; }
-.trace-body { flex: 1; color: #e2e8f0; word-break: break-all; }
-
-.llm-call { border: 1px solid #f1f5f9; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
-.llm-call-head { display: flex; gap: 10px; align-items: center; font-size: 12px; margin-bottom: 6px; flex-wrap: wrap; }
-.llm-prompt {
-  margin: 0; padding: 8px 10px; background: #0b1220; color: #cbd5e1; border-radius: 6px;
-  font-size: 11px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
-  max-height: 160px; overflow-y: auto;
+/* 右侧详情：头部信息卡 */
+.trace-detail { flex: 1; min-width: 0; overflow-y: auto; }
+.trace-head-card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+  padding: 12px 14px; margin-bottom: 12px;
 }
+.th-line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; }
+.th-status { color: #475569; }
+.th-dim { font-size: 11.5px; color: #64748b; }
+.th-runid {
+  margin-left: auto; font-size: 11px; color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.th-q { margin: 8px 0 6px; font-size: 14px; font-weight: 600; color: #0f172a; line-height: 1.6; }
+.th-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: #64748b; }
+.th-err { color: #dc2626; }
+.th-summary { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.sum-chip {
+  font-size: 11px; color: #0f766e; background: #f0fdfa; border-radius: 999px; padding: 2px 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 时间线：一步一行，点开看 detail 的格式化 JSON */
+.timeline { display: flex; flex-direction: column; }
+.tl-step { display: flex; gap: 10px; }
+.tl-rail { width: 12px; display: flex; justify-content: center; position: relative; flex-shrink: 0; }
+.tl-rail::before { content: ''; position: absolute; top: 0; bottom: 0; width: 1px; background: #e2e8f0; }
+.tl-step:first-child .tl-rail::before { top: 9px; }
+.tl-step:last-child .tl-rail::before { bottom: calc(100% - 9px); }
+.tl-dot {
+  position: relative; z-index: 1; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px;
+  background: #fff; border: 2px solid #2563eb;
+}
+.tl-dot.bad { border-color: #ef4444; background: #ef4444; }
+.tl-body { flex: 1; min-width: 0; padding-bottom: 8px; }
+.tl-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; font-family: inherit;
+  padding: 6px 10px; cursor: pointer; font-size: 12.5px; color: #1e293b;
+}
+.tl-head:hover { border-color: #0f766e; }
+.tl-icon { flex-shrink: 0; }
+.tl-name { font-weight: 600; }
+.tl-off { color: #94a3b8; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.tl-dur { color: #15803d; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.tl-badge { font-size: 10px; padding: 1px 7px; border-radius: 5px; }
+.tl-badge.st-error { background: #fef2f2; color: #dc2626; }
+.tl-badge.st-blocked { background: #fffbeb; color: #b45309; }
+.tl-badge.st-running { background: #eff6ff; color: #2563eb; }
+.tl-caret { margin-left: auto; color: #94a3b8; font-size: 10px; }
+.tl-json {
+  margin: 6px 0 0; padding: 10px 12px; max-height: 420px; overflow: auto;
+  background: #f8fafc; border: 1px solid #f1f5f9; border-left: 2px solid #2563eb; border-radius: 8px;
+  font-size: 11.5px; line-height: 1.65; color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* 异常 / 被拦截的步骤整行染色，扫一眼就知道断在哪 */
+.tl-step.k-error .tl-head { border-color: #fecaca; background: #fff7f7; }
+.tl-step.k-blocked .tl-head { border-color: #fed7aa; background: #fffbf5; }
+
 .turn-error {
   margin-top: 4px; font-size: 11px; color: #dc2626;
   background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 4px 8px;
@@ -1846,10 +2040,10 @@ select, .filters input, .filters select {
   .kv { grid-template-columns: 1fr; }
   .filters { gap: 6px; }
   .filters input, .filters select, .filters .inline-input { min-width: 0; width: 100%; }
-  .trace-terminal { font-size: 11px; padding: 10px; }
-  .trace-ms { width: 52px; }
-  .trace-kind { width: 96px; }
-  .llm-prompt { max-height: 120px; }
+  .trace-split { flex-direction: column; height: auto; min-height: 0; }
+  .trace-list { width: 100%; max-height: 320px; }
+  .trace-detail { overflow: visible; }
+  .tl-json { max-height: 260px; }
 }
 
 /* ── 安全防护 ─────────────────────────────────────────── */
