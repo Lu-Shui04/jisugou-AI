@@ -1,5 +1,43 @@
 # 极速购 AI 客服系统 — Python 版运行手册
 
+> 想快速找文件？先看第 0 章「代码结构」，按层找。
+
+## 0. 代码结构：按层找文件
+
+```
+server-py/app/
+├── main.py              FastAPI 入口：挂路由、装身份中间件
+├── prompts/             提示词层：全站提示词的唯一定义处（节点里不留文案）
+├── models/              模型层：对话模型 / Embedding 怎么建、怎么调
+│   ├── deepseek.py         create_model()：超时 + 重试 + 备用模型降级
+│   └── embedding.py        带熔断保护的 Embedding 包装
+├── retrieval/           检索层：向量召回 → RRF 融合 → 重排 → 关键词兜底
+│   ├── rag_chain.py        相似度阈值过滤 + 生成，并返回来源
+│   ├── rerank.py           硅基流动 bge-reranker 精排（可关，默认关）
+│   ├── query_utils.py      查询归一 / 关键词兜底 / RRF / 引用编号处理
+│   └── kb_bridge.py        给"没有知识库"的入口借用同一条检索链路
+├── graphs/              多节点工作流：意图识别 → 条件边 → 订单/知识库/闲聊 → 答案合成
+├── agents/              工具 Agent（订单查询页）
+├── chains/              纯 LCEL 链（基础对话页）
+├── security/            安全层：白名单→规则→小模型→输出检查 + 身份令牌 + 滑块门禁
+├── resilience/          韧性层：熔断三态机 + 模型降级 + 工具超时重试
+├── tools/               工具层：订单 / 物流 / 用户订单查询（每次调用都校验数据归属）
+├── observability/       Token 用量与对话记录（存 Redis，不可用时降级内存）
+├── db/                  Postgres / Redis / 会话解析（含历史数据权限裁剪）
+├── routers/             HTTP 接口层（很薄：只做协议解析 + SSE 推送）
+├── utils/               接地校验、人工接力判定、ID 解析、消息工具
+├── data/                演示数据（mock.py）与知识库原文（knowledge/*.md）
+└── scripts/             ingest：知识库切分入库
+```
+
+三条找文件的捷径：
+
+| 想改什么 | 去哪 |
+| --- | --- |
+| 话术 / 提示词 / 规则句 | `app/prompts/`（改完跑 `tests/test_prompts.py`） |
+| 模型参数、超时、降级、熔断 | `app/models/` + `app/resilience/` |
+| 召回、相似度阈值、重排 | `app/retrieval/` |
+
 ## 1. 环境准备
 
 ```bash
@@ -155,7 +193,7 @@ SSE 接口需加 `-N` 参数禁用 curl 缓冲，才能看到流式输出。
 
 ## 8. 常见问题
 
-- **启动时报 Postgres 连接/密码错误**：`app/chains/rag_chain.py` 在模块导入时会立即连接数据库初始化向量库，确保 `.env` 中的 Postgres 配置正确且服务已启动，再启动 FastAPI。
+- **启动时报 Postgres 连接/密码错误**：`app/retrieval/rag_chain.py` 在模块导入时会立即连接数据库初始化向量库，确保 `.env` 中的 Postgres 配置正确且服务已启动，再启动 FastAPI。
 - **RAG 查询无结果**：检查是否已执行第 4 步的 `ingest` 脚本。
 - **模型调用报 401/403**：检查 `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` 是否正确、额度是否充足。
 - **后台显示「登录已过期」**：令牌默认 8 小时过期，重新登录即可；也可调大 `ADMIN_TOKEN_TTL`。

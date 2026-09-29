@@ -24,7 +24,7 @@ git push
 | 绝对不能提交 | 原因 |
 | --- | --- |
 | `server-py/.env` | 里面有真实 API Key 与数据库密码（已被 .gitignore 忽略，别手滑 `git add -f`） |
-| `_kb_bench/` | 约 200MB 的本地实验脚本与中间结果 |
+| `_kb_bench/` | 约 200MB 的本地实验脚本与中间结果（目录已移出仓库，放在 `D:\tmp-deploy\_kb_bench`，别搬回来） |
 | `client/dist/`、`client/dist-jisu/` | 构建产物，重新构建即可 |
 | `server-py/_wsl_admin.sh` | 个人本机脚本，含本机绝对路径 |
 
@@ -33,8 +33,8 @@ git push
 ## 三、改完代码要跑的验证
 
 ```bash
-# 单元测试（离线，不需起服务；约 10 秒）
-cd server-py && python -m unittest discover -s tests -t . 
+# 单元测试（离线，不需起服务；约 12 秒，53 条黄金测试）
+cd server-py && python -m unittest discover -s tests -t .
 
 # 线上业务验收（4 个入口 + 退款三态 + 注入拦截 + 后台，16 项，约 20 秒）
 python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
@@ -58,12 +58,14 @@ python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
 | --- | --- |
 | `server-py/app/routers/` | 四个入口的 SSE 接口：chat / agent / rag / graph |
 | `server-py/app/graphs/` | LangGraph 工作流（意图识别 → 条件边 → 订单/知识库/闲聊 → 汇总） |
-| `server-py/app/chains/` | RAG 链、知识库借用桥（kb_bridge）、检索工具（query_utils） |
-| `server-py/app/security/` | 四层提示词防护（白名单 / 规则 / 小模型 / 输出检查） |
-| `server-py/app/resilience/` | 熔断器（三态机 + 失败分类 + 半开探测） |
+| `server-py/app/prompts/` | **提示词层**：全站提示词的唯一定义处，节点里不留文案 |
+| `server-py/app/models/` | **模型层**：对话模型（deepseek.py）/ Embedding 怎么建、怎么调 |
+| `server-py/app/retrieval/` | **检索层**：rag_chain（阈值过滤 + 生成）/ rerank（精排）/ query_utils（归一、关键词兜底、RRF）/ kb_bridge（借用链路） |
+| `server-py/app/security/` | 四层提示词防护（白名单 / 规则 / 小模型 / 输出检查）+ 身份令牌 + 滑块门禁 |
+| `server-py/app/resilience/` | **韧性层**：circuit（熔断三态机）/ model_fallback（模型降级）/ tool_guard（工具超时重试） |
 | `server-py/app/utils/handoff.py` | 退款族意图判定与"人工接力"话术 |
 | `server-py/app/utils/grounding.py` | 答案接地校验（防编造订单） |
-| `server-py/tests/` | 129 条单测 + 3 套评测集（注入 41 / 检索 15 / 退款意图 40） |
+| `server-py/tests/` | 53 条单测（security / order / resilience / rag / handoff / prompts 六个文件）+ 3 套评测集（注入 18 / 检索 8 / 退款意图 20 = 46 条） |
 | `client/src/` | Vue3 前端（四个业务页 + 管理后台 9 个页签） |
 
 ## 六、风格要求（用户偏好）
@@ -71,3 +73,7 @@ python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
 - 回复用中文，**给实测证据**（真实接口返回、真实数字），不要只说"已完成"
 - 有线上真实事故时，写清"现象 → 根因 → 修法 → 验证"，这类内容用户会拿去面试讲
 - 改动尽量小而聚焦；改完顺手把单测/评测集补上，测试与评测是这套项目的卖点之一
+- **测试总数有硬上限**：单测 + 评测用例合计 **≤ 100 条**（当前 53 + 46 = 99）。这是用户明确要求：
+  宁可少而准，也不要一堆乱七八糟的。要加新用例，就先把被它取代的旧用例合并或删掉，别让总数涨上去
+- 只留"黄金测试"：每条都要能说清它拦的是哪类错（线上事故回归 / 三态与边界 / 拦截与放行的对照）。
+  说不清、或换个实现照样通过的，直接删
