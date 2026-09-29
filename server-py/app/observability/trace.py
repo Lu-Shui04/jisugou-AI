@@ -80,6 +80,8 @@ STAGE_KINDS = {
     "tool": "tool",
     "tool_result": "tool_result",
     "answer": "answer",
+    "retrieval": "retrieval",
+    "rerank": "rerank",
 }
 
 
@@ -152,7 +154,13 @@ class Trace:
 
     # ── 记步骤 ────────────────────────────────────────────────────
     def step(self, kind: str, name: str, *, status: str = "ok",
-             detail=None, duration_ms: int = 0) -> None:
+             detail=None, duration_ms: int = 0, at: Optional[float] = None) -> None:
+        """记一步。
+
+        at 传"这一步真正发生的时间"（epoch 秒）：模型调用、检索这类明细是在回调里
+        采集的，只能等收尾时统一补记 —— 不带上真实时间的话，时间线上会看到
+        "模型调用"排在"返回回答"后面，顺序是错的。
+        """
         if self._finished:
             return
         if len(self.steps) >= MAX_STEPS:
@@ -160,7 +168,7 @@ class Trace:
             return
         self.steps.append({
             "idx": len(self.steps),
-            "offset_ms": int((time.time() - self.started) * 1000),
+            "offset_ms": int(((at or time.time()) - self.started) * 1000),
             "kind": kind or "step",
             "name": name,
             "status": status,
@@ -209,6 +217,12 @@ class Trace:
 
     async def _persist(self, pool, duration_ms: int) -> None:
         """真正写库的部分：一个事务写 run + 全部 step，顺带清理过期数据"""
+        # 按"真正发生的时间"排好序再落库，并按时间线重新编号：
+        # 补记的步骤（模型调用 / 检索明细）可能比它后面的阶段晚入队，
+        # 不排序的话前端时间线顺序就是错的（会看到"模型调用"排在"返回回答"之后）。
+        ordered = sorted(self.steps, key=lambda item: (item["offset_ms"], item["idx"]))
+        for index, item in enumerate(ordered):
+            item["idx"] = index
         async with pool.acquire() as conn:
             async with conn.transaction():
                     await conn.execute(
@@ -236,7 +250,7 @@ class Trace:
                               self.started + item["offset_ms"] / 1000.0,
                               item["kind"], item["name"], item["status"], item["duration_ms"],
                               json.dumps(item["detail"], ensure_ascii=False, default=str))
-                             for item in self.steps],
+                             for item in ordered],
                         )
                     # 保留策略：顺手清掉过期的（trace_runs.ts 上有索引）
                     if RETENTION_DAYS > 0:

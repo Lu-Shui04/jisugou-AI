@@ -74,6 +74,49 @@ class TestTraceCore(TraceCase):
             async def __aexit__(self, *args):
                 return False
 
+        # 补记的步骤按"真正发生的时间"排序后再落库：
+        # 模型调用 / 检索明细是收尾时补记的，不排序就会排到"返回回答"后面
+        class _Cm:
+            def __init__(self, value):
+                self.value = value
+
+            async def __aenter__(self):
+                return self.value
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _FakeConn:
+            def __init__(self):
+                self.rows = []
+
+            async def execute(self, *args, **kwargs):
+                return None
+
+            async def executemany(self, sql, rows):
+                self.rows = list(rows)
+
+            def transaction(self):
+                return _Cm(self)
+
+        class _FakePool:
+            def __init__(self):
+                self.conn = _FakeConn()
+
+            def acquire(self):
+                return _Cm(self.conn)
+
+        ordered = self._start(run_id="run-order")
+        ordered.step("answer", "返回回答", at=ordered.started + 5.0)
+        ordered.step("llm", "模型调用 #1", at=ordered.started + 1.0, duration_ms=900)
+        fake_pool = _FakePool()
+        with mock.patch("app.db.postgres.get_pool", return_value=fake_pool):
+            asyncio.run(ordered.finish(status="ok"))
+        # rows: (run_id, idx, ts, kind, name, status, duration_ms, detail)
+        self.assertEqual([row[3] for row in fake_pool.conn.rows], ["llm", "answer"])
+        self.assertEqual([row[1] for row in fake_pool.conn.rows], [0, 1], "落库前要按时间线重新编号")
+        self.assertLess(fake_pool.conn.rows[0][2], fake_pool.conn.rows[1][2], "ts 也要跟着排序")
+
         slow = self._start(run_id="run-slow")
         slow.step("llm", "模型调用 #1")
         started = time.time()

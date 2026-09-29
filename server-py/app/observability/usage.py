@@ -144,6 +144,9 @@ class TokenUsageCallback(BaseCallbackHandler):
                 "total_tokens": usage["total_tokens"] if usage else 0,
                 "latency_ms": latency,
                 "prompt_preview": self._prompt_preview,
+                # 这一步"真正发生的时间"：收尾时才补记到时间线上，
+                # 不带它的话顺序会错（模型调用排到"返回回答"后面）
+                "at": time.time(),
             })
         self._started_at = None
         self._prompt_preview = ""
@@ -171,6 +174,7 @@ class TokenUsageCallback(BaseCallbackHandler):
             return
         self.retrievals.append(
             {
+                "at": time.time(),
                 "query": _clip(query, 500),
                 # 实际拿去向量化的查询（口语化问句会被归一化，如"耳机咋卖"→"耳机"）
                 "embedded_query": _clip(embedded_query or query, 500),
@@ -320,6 +324,7 @@ class RequestUsage:
             trace.step(
                 "llm", f"模型调用 #{index}（{model}）",
                 duration_ms=int(call.get("latency_ms") or 0),
+                at=call.get("at"),
                 detail={
                     "model": model,
                     "prompt_tokens": int(call.get("prompt_tokens") or 0),
@@ -334,6 +339,7 @@ class RequestUsage:
             trace.step(
                 "retrieval", f"知识库检索 #{index}：{query[:60]}",
                 status="error" if item.get("error") else "ok",
+                at=item.get("at"),
                 detail={
                     "query": query,
                     "embedded_query": item.get("embedded_query") or "",
@@ -351,7 +357,7 @@ class RequestUsage:
             if stats:
                 trace.step(
                     "rerank", f"重排 #{index}：{stats.get('model') or stats.get('provider') or '本地策略'}",
-                    detail=stats,
+                    detail=stats, at=item.get("at"),
                 )
 
     async def _finish_trace(self, status: str) -> None:
