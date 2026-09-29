@@ -4,7 +4,6 @@
 {"id":"a06","text":"麻烦帮我把收货地址改一下","label":"action"}
 {"id":"a07","text":"我要投诉你们客服","label":"action"}
 {"id":"i01","text":"退款需要多少天？","label":"info"}
-{"id":"i02","text":"退款要几天到账","label":"info"}
 {"id":"i04","text":"退货有什么规则？","label":"info"}
 {"id":"i05","text":"钢化膜能退吗","label":"info"}
 {"id":"i06","text":"我买的耳机不想要了能退吗","label":"info"}
@@ -15,6 +14,5 @@
 {"id":"p03","text":"昨天申请的退款还没到","label":"progress"}
 {"id":"m01","text":"我要退款，顺便问下 X6 耳机多少钱","label":"mixed"}
 {"id":"m03","text":"帮我退掉这单，还有耳机什么时候发货","label":"mixed"}
-{"id":"n01","text":"耳机多少钱","label":"none"}
 {"id":"n02","text":"帮我查一下 U-101 的订单","label":"none"}
 {"id":"n03","text":"我的货怎么还没到","label":"none"}

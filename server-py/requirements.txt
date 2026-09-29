@@ -8,5 +8,7 @@ langchain-text-splitters
 langgraph
 redis
 psycopg[binary]
+# 全链路追踪落库：asyncpg 连接池（连不上就静默降级，不影响业务）
+asyncpg
 python-dotenv
 pydantic

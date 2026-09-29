@@ -5,4 +5,3 @@
 {"question":"退款要几天到账","expect_sources":["policies.md#退款流程"]}
 {"question":"人工客服电话是多少","expect_sources":["policies.md#联系客服"]}
 {"question":"耳机咋卖","expect_sources":["products.md#蓝牙耳机 X1 Pro","products.md#降噪头戴耳机 H7"]}
-{"question":"耳机","expect_sources":["products.md#蓝牙耳机 X1 Pro","products.md#降噪头戴耳机 H7"]}

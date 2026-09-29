@@ -30,6 +30,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 from app.db import redis_client
 from app.observability import chatlog
+from app.observability import trace as trace_mod
 
 logger = logging.getLogger("jisu.usage")
 
@@ -240,6 +241,12 @@ class RequestUsage:
         self.model = model or os.getenv("MODEL_NAME", "deepseek-chat")
         self.user_id = (user_id or "").strip()
         self.user_name = (user_name or "").strip()
+        # 全链路追踪：run_id 直接用 trace_id —— 后台「对话记录」和「链路追踪」
+        # 看的是同一次请求，两边可以互相点进去对照
+        self.trace = trace_mod.start_trace(
+            route, run_id=self.trace_id, user_id=self.user_id,
+            user_name=self.user_name, session_id=self.session_id,
+        )
         self.callback = TokenUsageCallback()
         self.question = ""
         self.answer = ""
@@ -259,6 +266,8 @@ class RequestUsage:
 
     def set_question(self, question: str) -> None:
         self.question = _clip(question)
+        if self.trace is not None:
+            self.trace.question = self.question
 
     def set_answer(self, answer: str) -> None:
         self.answer = _clip(answer)
@@ -282,9 +291,101 @@ class RequestUsage:
             "ts": int(time.time() * 1000),
             **{key: (_clip(value) if isinstance(value, str) else value) for key, value in detail.items()},
         })
+        # 同一份阶段信息同时写进全链路追踪：管理后台「链路追踪」页签按时间线展开，
+        # 每一步都能点开看入参出参（stage 已经是"哪一层、看到了什么"的现成结构）
+        if self.trace is not None:
+            self.trace.step(
+                trace_mod.stage_kind(name), name,
+                status="error" if name in ("blocked", "grounding_blocked") else "ok",
+                detail=detail,
+            )
 
     def elapsed_ms(self) -> int:
         return int((time.perf_counter() - self.started_at) * 1000)
+
+    # ── 全链路追踪：把回调采集到的明细补成步骤 ──────────────────────
+    def _record_trace_details(self) -> None:
+        """把「每次模型调用」与「每次检索 / 重排」补成追踪步骤
+
+        这两类明细是 LangChain 回调在**别的线程**里采集的（LangGraph 的节点跑在线程池，
+        ContextVar 不跨线程传播），埋点写在回调里会丢；统一在主流程收尾时补记，
+        顺序稳定、也不会漏掉关键信息。
+        """
+        trace = self.trace
+        if trace is None:
+            return
+
+        for index, call in enumerate(self.callback.calls, start=1):
+            model = call.get("model") or self.callback.model_name or self.model
+            trace.step(
+                "llm", f"模型调用 #{index}（{model}）",
+                duration_ms=int(call.get("latency_ms") or 0),
+                detail={
+                    "model": model,
+                    "prompt_tokens": int(call.get("prompt_tokens") or 0),
+                    "completion_tokens": int(call.get("completion_tokens") or 0),
+                    "total_tokens": int(call.get("total_tokens") or 0),
+                    "prompt_preview": call.get("prompt_preview") or "",
+                },
+            )
+
+        for index, item in enumerate(self.callback.retrievals, start=1):
+            query = item.get("query") or ""
+            trace.step(
+                "retrieval", f"知识库检索 #{index}：{query[:60]}",
+                status="error" if item.get("error") else "ok",
+                detail={
+                    "query": query,
+                    "embedded_query": item.get("embedded_query") or "",
+                    "top_k": item.get("top_k"),
+                    "threshold": item.get("threshold"),
+                    "kept": item.get("kept"),
+                    "filtered": item.get("filtered"),
+                    "degraded": item.get("degraded"),
+                    "error": item.get("error") or "",
+                    "rerank": item.get("rerank") or "",
+                    "hits": item.get("hits") or [],
+                },
+            )
+            stats = item.get("rerank_stats") or {}
+            if stats:
+                trace.step(
+                    "rerank", f"重排 #{index}：{stats.get('model') or stats.get('provider') or '本地策略'}",
+                    detail=stats,
+                )
+
+    async def _finish_trace(self, status: str) -> None:
+        """收尾追迹：补明细 → 记一条 response → 一次事务落库（失败只记日志）"""
+        trace = self.trace
+        if trace is None:
+            return
+        self._record_trace_details()
+        trace.step(
+            "response", "返回回答",
+            status="error" if status == "error" else "ok",
+            detail={
+                "status": status,
+                "answer": self.answer,
+                "latency_ms": self.elapsed_ms(),
+                "model": self.callback.model_name or self.model,
+                "total_tokens": self.callback.total_tokens,
+                "llm_calls": self.callback.llm_calls,
+            },
+        )
+        await trace.finish(
+            status={"ok": "ok", "blocked": "blocked"}.get(status, "error"),
+            summary={
+                "route": self.route,
+                "sessionId": self.session_id,
+                "model": self.callback.model_name or self.model,
+                "promptTokens": self.callback.prompt_tokens,
+                "completionTokens": self.callback.completion_tokens,
+                "totalTokens": self.callback.total_tokens,
+                "llmCalls": self.callback.llm_calls,
+                "retrievalCount": len(self.callback.retrievals),
+            },
+            error=self.error or None,
+        )
 
     def _record(self, status: str) -> dict:
         """完整的对话记录（落 Redis + 内存，供管理员后台审计）"""
@@ -336,6 +437,7 @@ class RequestUsage:
         }
         # 每次请求一行结构化日志
         logger.info("usage %s", json.dumps(payload, ensure_ascii=False))
+        await self._finish_trace(status)
         await _accumulate(record)
         await chatlog.record_turn(record)
         return payload
