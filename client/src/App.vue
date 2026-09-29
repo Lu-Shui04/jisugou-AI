@@ -109,7 +109,8 @@ const { userId, userName, users, ready, switching, switchUser } = useUser();
 const BUILD_TAG = '2026-09-27.1';
 
 // ── 开屏门禁 ──────────────────────────────────────────────────────
-// 距上次拖动在 1 分钟以内就直接进；超过 1 分钟（含首次打开）先过滑块。
+// 手里的门禁 Token 还有效（12 小时）就直接进，**刷新页面也不打断**；
+// 只有没 Token（首次/清过缓存）或 Token 真的过期了才弹滑块。
 // Token 失效时（后端 401）由 api.js 回调把 verified 置回 false，自动弹回滑块。
 const verified = ref(!gateEntryExpired());
 if (!verified.value) clearGateToken();

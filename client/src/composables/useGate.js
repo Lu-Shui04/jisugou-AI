@@ -11,8 +11,17 @@
 const TOKEN_KEY = 'jisu:gate-token';
 const VERIFIED_AT_KEY = 'jisu:gate-verified-at';
 
-/** 入口免验证窗口：距上次拖动超过这个时间，重新进入就要再拖一次 */
-export const GATE_ENTRY_TTL_MS = 60_000;
+/**
+ * 入口免验证窗口：距上次拖动超过这个时间，重新进入才需要再拖一次。
+ *
+ * 为什么是 12 小时（线上真实反馈："聊着聊着突然就被踢回滑动窗口"）：
+ * 原来这里是 60 秒，而服务端签的 Token 有效期是 12 小时 —— 也就是说**只要刷新一次
+ * 页面**（点"已更新到新版本"、误按 F5、开新标签页），哪怕手里的 Token 还有 11 小时
+ * 有效期，也会被重新弹一次滑块，正在用的人只觉得自己被莫名踢出去了。
+ * 这里改成与服务端 Token 同寿命：**Token 没过期就不打断**，过期了服务端 401、
+ * 前端自然弹回滑块。
+ */
+export const GATE_ENTRY_TTL_MS = 12 * 60 * 60 * 1000;
 
 export function getGateToken() {
   try {
@@ -37,15 +46,29 @@ export function clearGateToken() {
 }
 
 /**
+ * Token 本身是否已过期。
+ * Token 格式是 "过期时间戳.签名"（见 server-py/app/security/gate.py），
+ * 直接读第一段就能判断，不用发请求。缺时间戳的一律当过期。
+ */
+export function gateTokenExpired() {
+  const token = getGateToken();
+  if (!token || !token.includes('.')) return true;
+  const exp = Number(token.split('.')[0]);
+  if (!exp || Number.isNaN(exp)) return true;
+  return exp * 1000 <= Date.now();
+}
+
+/**
  * 这次进入是否需要重新拖滑块。
- * 只看时间戳，不看 Token 本身有没有过期 —— 会话中途不打断，
- * 只有"重新打开页面"时才会问一次。
+ * 判据是"Token 已经过期"或"距上次拖动超过入口窗口"——
+ * 手里 Token 还有效时**绝不打断**（会话中途被弹回验证页是线上真实投诉过的体验问题）。
  */
 export function gateEntryExpired() {
   if (!getGateToken()) return true;
+  if (gateTokenExpired()) return true;
   try {
     const at = Number(localStorage.getItem(VERIFIED_AT_KEY) || 0);
-    if (!at) return true; // 旧版本留下的 Token 没有时间戳，按过期处理
+    if (!at) return false; // 旧版本留下的 Token 没有时间戳：只要没过期就继续用
     return Date.now() - at > GATE_ENTRY_TTL_MS;
   } catch {
     return true;

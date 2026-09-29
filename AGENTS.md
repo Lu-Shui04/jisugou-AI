@@ -52,6 +52,16 @@ python D:\tmp-deploy\live_business_test.py http://139.199.4.231:8050
 
 ⚠️ **代码是打进 Docker 镜像的**：改完必须 `docker compose up -d --build`，只 `restart` 不生效（本地和线上都一样）。前端是 hash 命名资源，用户浏览器可能还跑着旧 JS —— 页面右下角会自动提示"已更新到新版本，点这里刷新"。
 
+⚠️ **线上前端有两个入口，改前端必须两边都构建上传**（踩过：只更新了一个，另一个一直是白屏）：
+
+| 入口 | web 根 | 构建参数 |
+| --- | --- | --- |
+| http://139.199.4.231:8050/ | `/var/www/jisu-8050` | 默认（base=`/`、API=`/api`） |
+| http://139.199.4.231/jisu/ | `/var/www/jisu`（软链自 `/var/www/portfolio/jisu`） | `VITE_BASE=/jisu/` + `VITE_API_BASE=/jisu/api` |
+
+两边都指向同一套后端（nginx 反代 `127.0.0.1:3000`）。构建后**保留旧 assets 再上传**，
+不要 `rm -rf` 整个目录：浏览器里缓存的旧 index.html 会去拿已经被删掉的旧 JS，页面直接白屏。
+
 ## 五、代码结构速查
 
 | 位置 | 说明 |
