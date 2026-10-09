@@ -42,8 +42,16 @@ class TestOrderPromptRules(unittest.TestCase):
         self.assertIn("漏填", self.text)
 
     def test_rule_c_lookup_before_answering_about_one_order(self):
-        """提到某一笔具体订单要先查再答（否则会被出口接地校验拦成"没能核实到"）"""
+        """提到某一笔具体订单要先查再答（否则会被出口接地校验拦成"没能核实到"）
+
+        同日新增（2026-10-09 线上实测）：模型只查了本人订单列表，却在答复里把用户发的
+        "008" 补成 "ORD-008" 复述 —— 这个号从没被任何工具返回过，出口接地校验判它不接地，
+        整段答复被换成"这笔数据没能核实到"（订单查询页 2 次里挂 1 次）。
+        所以提示词必须钉住"订单号只能来自工具返回、裸数字照原样说"这一条。
+        """
         self.assertIn("getOrderInfo", self.text)
+        self.assertIn("必须是工具返回过的", self.text)
+        self.assertIn("不要**替他补成 ORD-", self.text)
 
     def test_synthesizer_also_guards_against_blaming_data(self):
         """最终答复由合成节点写，这条约束不能只写在订单节点里"""
