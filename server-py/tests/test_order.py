@@ -421,6 +421,26 @@ class TestOrderToolsAndLookup(unittest.TestCase):
             full_id = deterministic_lookup("ORD-004 详情", history=SHORTHAND_HISTORY)
         self.assertEqual(full_id["steps"][0]["input"]["orderId"], "ORD-004")
 
+        # 相对指代（线上实测 2026-10-09 智能中枢）：用户刚查完 ORD-006 的物流，接着问"另一个呢"。
+        # "另一个"要的是"**不是**刚提到的那一笔"——恰好与上面那条"取最后一笔"的规则相反，
+        # 以前白名单里没有它，补不出来 → 模型这轮 0 次工具调用 → 只能反问"请提供订单号"。
+        complement_history = [
+            {"role": "user", "content": "帮我看看006点物流"},
+            {"role": "assistant", "content": "亲，帮您查了 ORD-006，这笔订单目前是待发货状态，还没有快递单号…"},
+        ]
+        with identity.acting_as("U-101"):
+            other = deterministic_lookup("另一个呢", history=complement_history)
+        self.assertIsNotNone(other, "另一个 = 本人订单里不是刚提到的那笔")
+        self.assertEqual(other["steps"][0]["input"]["orderId"], "ORD-003")
+
+        # 但"另一个"绝不能瞎猜：本人有 4 笔时说不清是哪个 → 不补
+        with identity.acting_as("U-100"):
+            self.assertIsNone(deterministic_lookup("另一个呢", history=[
+                {"role": "assistant", "content": "ORD-004 已完成，188.8 元"}]))
+        # 新会话张口就是"另一个"，没有参照物 → 同样不补
+        with identity.acting_as("U-101"):
+            self.assertIsNone(deterministic_lookup("另一个呢"))
+
     def test_ambiguous_or_foreign_shorthand_is_not_guessed(self):
         """补不出唯一结果就不猜：猜错等于把别人的订单当成用户的报出去
 

@@ -14,8 +14,9 @@ from langgraph.prebuilt import create_react_agent
 
 from app.models.deepseek import create_model
 from app.prompts import order_agent as order_agent_prompts
-from app.security import identity
+from app.security import access, identity
 from app.tools.order_tools import all_tools, deterministic_lookup
+from app.utils.ids import resolve_single_order
 
 _model = create_model(temperature=0)
 
@@ -30,8 +31,35 @@ def principal_from_state(state) -> identity.Principal:
     return identity.current_principal()
 
 
+def _resolved_reference(state, principal) -> str:
+    """用户这句话里的指代/省写，先**确定性**解析成唯一订单号（解析不出唯一结果就返回空）
+
+    只认他本人的订单（valid=own），所以不可能把模型引到别人的订单上。
+    """
+    if not principal.authenticated or not isinstance(state, dict):
+        return ""
+    # 注意：create_react_agent 传给 prompt 的 state **只有 messages**，
+    # 没有 user_input 这个键（踩过一次：拿 state["user_input"] 取到 None，
+    # 于是这条提示一直没生效，线上还是 2/3 不稳）。当前这句话要从最后一条 human 消息里取。
+    messages = list(state.get("messages") or [])
+    text = ""
+    for message in reversed(messages):
+        role = str(getattr(message, "type", "") or getattr(message, "role", "") or "")
+        if role in ("human", "user"):
+            text = str(getattr(message, "content", "") or "")
+            break
+    if not text.strip():
+        return ""
+    own = [order["orderId"] for order in access.orders_of(principal.user_id)]
+    return resolve_single_order(text, messages, valid=own)
+
+
 def _prompt(state) -> list:
-    """动态系统提示：把"当前登录用户是谁"告诉模型（真正的拦截在工具里，这里只是让它少走弯路）"""
+    """动态系统提示：把"当前登录用户是谁"告诉模型（真正的拦截在工具里，这里只是让它少走弯路）
+
+    顺带把"这句话里的指代指的是哪一笔"也算好告诉它 —— 实测同一句"另一个呢"，
+    让模型自己判断指代会给出三种不同答复（见 app/prompts/order_agent.reference_hint 的注释）。
+    """
     principal = principal_from_state(state)
     who = order_agent_prompts.identity_line(
         authenticated=principal.authenticated,
@@ -39,6 +67,7 @@ def _prompt(state) -> list:
         user_name=principal.user_name,
     )
     rules = order_agent_prompts.order_agent_rules(who)
+    rules += order_agent_prompts.reference_hint(_resolved_reference(state, principal))
     messages = list(state.get("messages") or []) if isinstance(state, dict) else []
     return [SystemMessage(content=rules)] + messages
 

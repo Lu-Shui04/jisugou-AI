@@ -11,13 +11,38 @@ from langchain_core.runnables import RunnableConfig
 
 from app.models.deepseek import create_model
 from app.prompts.graph import synthesizer_prompt_asked, synthesizer_prompt_not_asked
+from app.security import access, identity
 from app.utils import grounding
+from app.utils.ids import resolve_single_order
 
 # streaming=True：合成节点是最终答案产出者，开流式才能被 LangGraph 逐 token 推给前端
 _model = create_model(temperature=0.5, streaming=True)
 _parser = StrOutputParser()
 _chain_asked = synthesizer_prompt_asked | _model | _parser
 _chain_not_asked = synthesizer_prompt_not_asked | _model | _parser
+
+
+def _reference_line(state, user_input: str) -> str:
+    """把用户这句里的指代（"另一个""这单"）确定性解析成订单号，写进合成提示
+
+    没有这一步时：工具明明已经查回 ORD-003 的完整物流，合成节点仍会写
+    "小购没把握是哪一笔，方便把订单号发给我吗"（线上实测，同一句"另一个呢"多次里有多次这样）。
+    解析只认**本人**订单，解析不出唯一结果就返回空串（宁可不提示，也不猜）。
+    """
+    principal = identity.current_principal()
+    if isinstance(state, dict):
+        user = identity.get_user(str(state.get("authenticated_user_id") or ""))
+        if user is not None:
+            principal = identity.Principal(user_id=user.user_id, user_name=user.name,
+                                           authenticated=True, reason="ok")
+    if not principal.authenticated:
+        return ""
+    own = [order["orderId"] for order in access.orders_of(principal.user_id)]
+    picked = resolve_single_order(user_input, (state or {}).get("messages"), valid=own)
+    if not picked:
+        return ""
+    return (f"\n\n【指代解析】用户这句话里的指代已经确定为 **{picked}**"
+            f"（他本人订单里「不是刚提到的那一笔」）：直接按这一笔回答，不要再反问他指哪一笔。")
 
 
 def answer_synthesizer_node(state, config: RunnableConfig = None):
@@ -41,6 +66,7 @@ def answer_synthesizer_node(state, config: RunnableConfig = None):
             "user_input": user_input,
             "order_result": order_facts,
             "rag_result": rag_result or "无",
+            "reference": _reference_line(state, user_input),
         },
         config=config,
     )

@@ -57,6 +57,11 @@ _NTH_RE = re.compile(r"第\s*([一二三四五六七八九十两]|\d{1,2})\s*(?:
 _BARE_DIGITS_RE = re.compile(r"(?<![A-Za-z0-9])(\d{3,5})(?!\d)")
 _ANAPHORA_RE = re.compile(r"(这单|那单|这笔|那笔|这个订单|那个订单|该订单|此单|刚才那|上面那|它)")
 _ORDER_TOPIC_RE = re.compile(r"(订单|物流|快递|发货|到哪|签收|派送|退款)")
+# 互补指代："另一个" / "另外那笔" / "剩下的那笔" —— 要的是**不是刚说过的那笔**，
+# 语义与下面的 _ANAPHORA_RE 正好相反，所以不能塞进同一条规则（那条取的是 ordered[-1]）。
+# 线上实测（2026-10-09 智能中枢）：用户刚查完 ORD-006 的物流，接着问「另一个呢」→
+# 补不出来 → 模型这轮 0 次工具调用 → 只能反问"请提供订单号"，用户当场追问"另一个就是另一个订单啊"。
+_COMPLEMENT_RE = re.compile(r"(另一个|另一笔|另外一?个|另外那|另外一笔|其他那?笔|剩下的那?笔|剩余的那?笔)")
 
 
 def history_order_ids(history) -> list[str]:
@@ -81,7 +86,8 @@ def resolve_order_ids(text: str, history=None, valid=()) -> list[str]:
     context = history_order_ids(history)
     # 候选集 = 上下文里的号 ∪ 本人名下的号
     # 后者是必须的：线上那次表格里恰好漏掉了 ORD-004，只认上下文就补不出来
-    candidates = list(dict.fromkeys(context + [normalize_id(item) for item in (valid or [])]))
+    own = [normalize_id(item) for item in (valid or [])]
+    candidates = list(dict.fromkeys(context + own))
     if not candidates:
         return []
 
@@ -105,8 +111,34 @@ def resolve_order_ids(text: str, history=None, valid=()) -> list[str]:
         if 1 <= index <= len(ordered):
             picked.append(ordered[index - 1])
 
-    # 3) 指代 + 订单话题："这单到哪了" / "它发货了吗"
+    # 3) 互补指代："另一个呢" / "另外那笔呢" / "剩下的那笔"
+    #    语义 = 本人订单里**排除掉刚提到的那一笔**之后剩下的；只剩一笔才敢补，多解一律不猜
+    #    （"另一个"不能走下面第 4 条：那条取 ordered[-1]，恰好是"刚说过的那笔"，方向相反）
+    #    必须**上文真的提到过订单**才算数：新会话张口就是"另一个"，没有参照物，不猜
+    if not picked and _COMPLEMENT_RE.search(text) and context:
+        rest = [oid for oid in (own or candidates) if oid != ordered[-1]]
+        if len(rest) == 1:
+            picked.append(rest[0])
+
+    # 4) 指代 + 订单话题："这单到哪了" / "它发货了吗"
     if not picked and _ANAPHORA_RE.search(text) and _ORDER_TOPIC_RE.search(text):
         picked.append(ordered[-1])
 
     return list(dict.fromkeys(picked))
+
+
+def resolve_single_order(text: str, history=None, valid=()) -> str:
+    """把指代/省写解析成**唯一**一个订单号；不唯一、或不在本人订单里 → 返回空串
+
+    用途：把解析结果当**提示**写进系统提示，让模型照着去查（而不是让它自己猜哪一笔），
+    事实仍然只能来自工具返回。历史上这条链路的毛病是"模型这轮不调工具就直接口述状态"——
+    实测同一句"另一个呢"三次能给出三种答复（一次查对、一次只凭上文说状态、一次答成另一笔）。
+    限定必须落在 valid（本人订单）内：宁可不提示，也绝不把模型引到别人的订单上。
+    """
+    own = [normalize_id(item) for item in (valid or [])]
+    if not own:
+        return ""
+    picked = resolve_order_ids(text, history, valid=own)
+    if len(picked) != 1:
+        return ""
+    return picked[0] if picked[0] in own else ""
