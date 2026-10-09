@@ -48,10 +48,25 @@ class TestOrderPromptRules(unittest.TestCase):
         "008" 补成 "ORD-008" 复述 —— 这个号从没被任何工具返回过，出口接地校验判它不接地，
         整段答复被换成"这笔数据没能核实到"（订单查询页 2 次里挂 1 次）。
         所以提示词必须钉住"订单号只能来自工具返回、裸数字照原样说"这一条。
+
+        再往深一层（同一天的"另一个呢"）：指代/描述是**开放**说法（另一个 / 剩下的那个 /
+        最贵的那笔 / 还没发货的那个 / 钢化膜那单…），靠正则白名单补不完。
+        根治办法是把「本人订单清单」摆给模型做**闭集选择**，挑不出就不猜 —— 这条不能被人删掉。
         """
         self.assertIn("getOrderInfo", self.text)
         self.assertIn("必须是工具返回过的", self.text)
         self.assertIn("不要**替他补成 ORD-", self.text)
+        from app.prompts.order_agent import own_orders_block
+        block = own_orders_block([
+            {"orderId": "ORD-003", "status": "已完成", "amount": 138.9,
+             "createTime": "2025-03-18 09:00:00", "items": [{"name": "钢化膜", "qty": 1}]},
+            {"orderId": "ORD-006", "status": "待发货", "amount": 199.0,
+             "createTime": "2025-03-23 08:15:00", "items": [{"name": "无线鼠标 M300", "qty": 1}]},
+        ])
+        self.assertIn("ORD-003", block)   # 候选清单要真的列出本人的订单
+        self.assertIn("ORD-006", block)
+        self.assertIn("待发货", block)     # 带上状态/金额/时间/商品，描述型指代才选得出来
+        self.assertIn("不要猜", block)
 
     def test_synthesizer_also_guards_against_blaming_data(self):
         """最终答复由合成节点写，这条约束不能只写在订单节点里"""

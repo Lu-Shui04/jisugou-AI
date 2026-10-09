@@ -67,6 +67,10 @@ def _prompt(state) -> list:
         user_name=principal.user_name,
     )
     rules = order_agent_prompts.order_agent_rules(who)
+    if principal.authenticated:
+        # 把"他本人的订单清单"摆给模型，让它对开放式的指代/描述做**闭集选择**
+        # （"另一个""最贵的那笔""还没发货的那个"… 靠正则枚举永远补不完）
+        rules += order_agent_prompts.own_orders_block(access.orders_of(principal.user_id))
     rules += order_agent_prompts.reference_hint(_resolved_reference(state, principal))
     messages = list(state.get("messages") or []) if isinstance(state, dict) else []
     return [SystemMessage(content=rules)] + messages

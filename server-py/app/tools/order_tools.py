@@ -27,7 +27,9 @@ class OrderIdInput(BaseModel):
 
 
 class TrackingNoInput(BaseModel):
-    trackingNo: str = Field(description="快递单号，例如 SF1234567890")
+    # 示例值故意用一串不可能的 0：以前写的是 SF1234567890，
+    # 而它恰好是演示数据里 ORD-001 的真实单号，模型会把示例当成真数据报给用户
+    trackingNo: str = Field(description="快递单号，格式为两字母+数字，例如 SF0000000000")
 
 
 class UserIdInput(BaseModel):

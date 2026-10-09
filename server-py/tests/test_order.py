@@ -511,6 +511,21 @@ class TestGrounding(unittest.TestCase):
         # 大小写不敏感：小写 ord-999 一样要认出来
         self.assertEqual(ungrounded_order_ids("ord-999", "ORD-001"), ["ORD-999"])
 
+        # 快递单号同样要接地：线上实测（2026-10-09 智能中枢）模型一次工具都没调，
+        # 直接报"快递：顺丰速运，快递单号 SF1234567890"——真实是京东物流 JD9876543210，
+        # 而 SF1234567890 恰好是工具 schema 里的示例值（示例被当成了真数据）。
+        # 当时接地校验只看订单号，这条编造漏了过去。
+        ok, detail = check_answer(
+            "亲，ORD-003 已完成，快递：顺丰速运，快递单号 SF1234567890", REAL_FACTS + " ORD-003")
+        self.assertFalse(ok)
+        self.assertEqual(detail["offending"], [])
+        self.assertEqual(detail["offending_tracking"], ["SF1234567890"])
+
+        # 对照：工具返回过的单号照常放行，不能被误杀
+        ok, _detail = check_answer("亲，ORD-003 的快递单号是 JD9876543210",
+                                   REAL_FACTS + " ORD-003 JD9876543210")
+        self.assertTrue(ok, "工具事实里的快递单号不该被当成编造")
+
         # 拦下后替换成安全话术，并留下事故详情（route 便于定位是哪条链路）
         answer, incident = sanitize("查到 ORD-999 了", REAL_FACTS, route="graph")
         self.assertEqual(answer, UNGROUNDED_ANSWER)

@@ -28,6 +28,9 @@ def _system_prompt(state=None) -> list:
     )
     now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
     rules = order_agent_prompts.customer_agent_rules(who, now)
+    if principal.authenticated:
+        # 同智能中枢：候选清单摆出来，让模型做闭集选择（见 prompts/order_agent.own_orders_block）
+        rules += order_agent_prompts.own_orders_block(access.orders_of(principal.user_id))
     rules += order_agent_prompts.reference_hint(_resolved_reference(state, principal))
 
     messages = list(state.get("messages") or []) if isinstance(state, dict) else []

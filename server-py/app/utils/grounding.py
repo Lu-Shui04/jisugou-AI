@@ -13,6 +13,9 @@ import logging
 import re
 from typing import Iterable, Optional
 
+# 快递单号的格式规则与检索/权限层共用一份（app/utils/ids.py），避免两边各写一份跑偏
+from app.utils.ids import TRACKING_RE
+
 logger = logging.getLogger("jisu.grounding")
 
 ORDER_ID_RE = re.compile(r"ORD-\d+", re.IGNORECASE)
@@ -116,23 +119,49 @@ def ungrounded_order_ids(answer: str, facts: str) -> list[str]:
     return sorted(offending)
 
 
+def ungrounded_tracking_nos(answer: str, facts: str) -> list[str]:
+    """回答里出现了、但事实里没有的快递单号（同样排除"格式示例"用法）
+
+    线上实测（2026-10-09 智能中枢）：模型这一轮**一次工具都没调**，直接报
+    "快递：顺丰速运，快递单号 SF1234567890" —— 真实数据里 ORD-003 是京东物流 JD9876543210，
+    而 SF1234567890 恰好是工具 schema 里写的示例值（模型把示例当成了真数据）。
+    当时接地校验只看订单号，这条编造就漏过去了。快递单号和订单号一样是**格式固定、可精确比对**的，
+    没有理由不校验。
+    """
+    if not answer:
+        return []
+    known = {value.upper() for value in TRACKING_RE.findall(facts or "")}
+    offending: list[str] = []
+    for match in TRACKING_RE.finditer(answer):
+        value = match.group(0).upper()
+        if value in known or value in offending:
+            continue
+        if _is_format_example(answer, match):   # "单号格式如 SF1234567890" 不是数据
+            continue
+        offending.append(value)
+    return sorted(offending)
+
+
 def check_answer(answer: str, facts: str, *, require_facts_for_ids: bool = True) -> tuple[bool, dict]:
     """校验回答是否"接地"
 
     返回 (是否通过, 详情)。不通过的情况：
-      1. 回答里的订单号在工具事实里找不到（典型的编造）
+      1. 回答里的订单号 / 快递单号在工具事实里找不到（典型的编造）
       2. 工具明确返回错误/无数据，但回答却报出了订单号
 
-    只校验订单号——它是最强、最可靠的信号（格式固定、可精确比对）；
-    金额/状态这类自由文本不做硬校验，避免误伤正常措辞。
+    只校验**格式固定、可精确比对**的标识（订单号 + 快递单号）；
+    金额/状态/商品名这类自由文本不做硬校验，避免误伤正常措辞。
     """
     if not require_facts_for_ids or not answer:
         return True, {}
 
     offending = ungrounded_order_ids(answer, facts)
-    if offending:
-        detail = {"reason": "order_id_not_in_facts", "offending": offending}
-        logger.error("答案接地校验失败：回答里出现事实中不存在的订单号 %s", offending)
+    offending_tracking = ungrounded_tracking_nos(answer, facts)
+    if offending or offending_tracking:
+        detail = {"reason": "id_not_in_facts", "offending": offending,
+                  "offending_tracking": offending_tracking}
+        logger.error("答案接地校验失败：事实里不存在的订单号 %s / 快递单号 %s",
+                     offending, offending_tracking)
         return False, detail
     return True, {}
 
