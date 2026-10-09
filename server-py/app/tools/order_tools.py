@@ -75,11 +75,14 @@ def get_order_info_tool(orderId: str) -> str:
     order = access.find_order(order_id)
     if not order:
         # 明确区分"订单不存在"，不要含糊成"查不到"，否则模型只能猜
+        # 同样要给"出路"：用户写错号时，他自己名下那几笔才是他真正要找的
         return _dumps(
             {
                 "error": f"订单 {order_id} 不存在",
-                "hint": "订单号格式为 ORD-xxx。请如实告知用户该订单号不存在并让他核对，"
-                        "不要猜测订单内容、也不要编造状态。",
+                "ownOrders": access.own_order_ids(principal),
+                "hint": f"系统里没有 {order_id} 这个订单号（格式为 ORD-xxx）。"
+                        "请如实告知用户该订单号不存在并让他核对，不要猜测订单内容、也不要编造状态；"
+                        "同时把 ownOrders 里**他本人的**订单号列给他、问他要不要查其中某一笔。",
             }
         )
 

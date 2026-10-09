@@ -344,6 +344,35 @@ class TestOrderToolsAndLookup(unittest.TestCase):
         self.assertIsNone(deterministic_lookup("你好呀"))
         self.assertIsNone(deterministic_lookup("我有哪些订单"))
 
+    def test_denied_or_missing_id_still_shows_own_orders(self):
+        """别人的号 / 不存在的号：拒绝的同时必须把「他自己那几笔」端出来
+
+        线上现象（2026-10-09 智能中枢）：用户发 "008"，系统查到 ORD-008 是别人的，
+        只回了一句"它不属于您当前登录的账号（U-101）"就结束了 —— 拒绝本身没错，
+        但用户拿不到任何出路，当场反问"那倒是查我的啊？"（用户原话）。
+
+        修法：FORBIDDEN 与「订单号不存在」两条返回都带上 ownOrders：
+        只放**本人**的订单号、不放他人任何字段；模型据此回
+        "这笔不在您名下，您名下有 A、B，要不要帮您查其中一笔？"
+        """
+        with identity.acting_as("U-101"):
+            foreign = _json(get_order_info_tool.invoke({"orderId": "ORD-008"}))
+        self.assertEqual(foreign["code"], "FORBIDDEN")
+        self.assertEqual(foreign["ownOrders"], ["ORD-003", "ORD-006"])
+        self.assertNotIn("ORD-008", foreign["ownOrders"])   # 被拒的那笔绝不能出现在引导里
+
+        # 号压根不存在（用户记错了号）：也要给出路，而不是只说一句"查不到"
+        with identity.acting_as("U-101"):
+            missing = _json(get_order_info_tool.invoke({"orderId": "ORD-011"}))
+        self.assertIn("不存在", missing["error"])
+        self.assertEqual(missing["ownOrders"], ["ORD-003", "ORD-006"])
+
+        # 没登录时一个字段都不给：ownOrders 不能变成"匿名也能拿到订单号"的新口子
+        with identity.principal_scope(identity.ANONYMOUS):
+            anonymous = _json(get_order_info_tool.invoke({"orderId": "ORD-001"}))
+        self.assertEqual(anonymous["code"], "UNAUTHENTICATED")
+        self.assertNotIn("ownOrders", anonymous)
+
     def test_shorthand_order_ids_resolved_from_context(self):
         """省略写法 / 指代要能落到具体订单上
 

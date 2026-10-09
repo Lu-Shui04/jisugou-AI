@@ -53,6 +53,19 @@ def owns_tracking(principal: identity.Principal, tracking_no: str) -> bool:
     return bool(order) and owns_user(principal, order.get("userId") or "")
 
 
+def own_order_ids(principal: identity.Principal) -> list[str]:
+    """本人名下的订单号（只有号，不含任何他人字段）
+
+    用途：拒绝之后的**出路**。线上事故（2026-10-09 智能中枢）：用户发 "008"，
+    系统查到 ORD-008 是别人的，回一句"它不属于您当前登录的账号（U-101）"就结束了 ——
+    拒绝本身没错，但没告诉用户"你名下有哪些"，用户当场反问"那倒是查我的啊？"。
+    所以每条拒绝/查无此单的返回里都带上他自己那几笔，让模型有话可说、有单可查。
+    """
+    if not principal.authenticated:
+        return []
+    return [order["orderId"] for order in orders_of(principal.user_id)]
+
+
 # ── 拒绝话术（给模型看的 JSON，模型据此如实转达）──────────────────
 def deny_unauthenticated(principal: identity.Principal) -> dict:
     return {
@@ -69,7 +82,9 @@ def deny_foreign_user(principal: identity.Principal, requested: str) -> dict:
     return {
         "error": f"无权查看用户 {normalize_id(requested)} 的订单：当前登录用户是 {principal.user_id}",
         "code": "FORBIDDEN",
+        "ownOrders": own_order_ids(principal),
         "hint": "系统只允许查询本人订单。请如实告知用户无权查看他人订单，"
+                "再把 ownOrders 里**他自己的**订单号列给他、问他要不要查其中某一笔；"
                 "不要换用户 ID 重试、不要猜测订单内容。",
     }
 
@@ -80,8 +95,11 @@ def deny_foreign_order(principal: identity.Principal, order_id: str) -> dict:
     return {
         "error": f"无权查看订单 {normalize_id(order_id)}：它不属于当前登录用户 {principal.user_id}",
         "code": "FORBIDDEN",
-        "hint": "系统只允许查询本人名下的订单。请如实告知用户无权查看，"
-                "不要换订单号重试、不要编造订单内容。",
+        "ownOrders": own_order_ids(principal),
+        "hint": f"这笔订单不在当前登录用户 {principal.user_id} 名下。请如实告知用户"
+                "「这笔不在您名下」（不要说他名下没订单、不要说成订单不存在），"
+                "再把 ownOrders 里**他自己的**订单号列给他、问他要不要查其中某一笔；"
+                "不要拿别人的订单号重试、不要透露这笔订单的任何字段、不要编造。",
     }
 
 
@@ -91,7 +109,10 @@ def deny_foreign_tracking(principal: identity.Principal, tracking_no: str) -> di
     return {
         "error": f"无权查看快递 {normalize_id(tracking_no)} 的物流：该包裹不属于当前登录用户 {principal.user_id}",
         "code": "FORBIDDEN",
-        "hint": "系统只允许查询本人包裹的物流。请如实告知用户无权查看，不要编造物流信息。",
+        "ownOrders": own_order_ids(principal),
+        "hint": "系统只允许查询本人包裹的物流。请如实告知用户该包裹不在他名下，"
+                "再把 ownOrders 里**他自己的**订单号列给他、问要不要从订单号查他本人的物流"
+                "（由订单号查出的物流更可靠）；不要编造物流信息。",
     }
 
 
